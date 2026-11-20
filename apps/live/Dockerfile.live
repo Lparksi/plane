@@ -47,6 +47,15 @@ ENV TURBO_TELEMETRY_DISABLED=1
 
 RUN pnpm turbo run build --filter=live
 
+# Remove only the uniquely located, upstream-verified zod 4.6.7 test fixture
+# after the build and before node_modules is copied into the final image.
+RUN set -eu; \
+    target='/app/node_modules/.pnpm/zod@4.6.7/node_modules/zod/src/v4/mini/tests/string.test.ts'; \
+    matches="$(find /app/node_modules/.pnpm -type f -path '*/zod@4.6.7*/node_modules/zod/src/v4/mini/tests/string.test.ts' -print)"; \
+    if [ "$matches" != "$target" ] || [ ! -f "$target" ] || [ -L "$target" ]; then exit 1; fi; \
+    printf '%s  %s\n' 'f4ebdab74387516508d0ce96a56979fe06af7e2425dccc13d34c0a229ba3a050' "$target" | sha256sum -c -; \
+    rm -- "$target"
+
 # *****************************************************************************
 # STAGE 3: Run the project
 # *****************************************************************************

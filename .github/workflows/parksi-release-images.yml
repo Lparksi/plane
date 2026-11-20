@@ -166,9 +166,14 @@ jobs:
             - anaconda-log
           YAML
             chmod 0444 "$scratch/secret-config.yaml"
-            mkdir -m 0777 "$scratch/scanner-cache"
+            # Match the hosted runner's non-root UID/GID so files created in
+            # this bind-mounted cache remain removable by its EXIT trap.
+            scanner_uid=$(id -u)
+            scanner_gid=$(id -g)
+            [[ "$scanner_uid" =~ ^[0-9]+$ && "$scanner_gid" =~ ^[0-9]+$ && "$scanner_uid" != 0 ]]
+            mkdir -m 0700 "$scratch/scanner-cache"
             set +e
-            timeout 600 docker run --rm --network none --read-only --user 65534:65534 --cap-drop ALL \
+            timeout 600 docker run --rm --network none --read-only --user "$scanner_uid:$scanner_gid" --cap-drop ALL \
               --security-opt no-new-privileges --pids-limit 128 --memory 2g --cpus 2 \
               --tmpfs /tmp:rw,noexec,nosuid,size=128m \
               --mount "type=bind,src=$scratch/image.tar.gz,dst=/input/image.tar.gz,readonly" \
@@ -181,9 +186,67 @@ jobs:
               > "$scratch/report.json" 2> "$scratch/trivy.log"
             scan_exit=$?
             set -e
-            # Emit only a fixed outcome; never print report content, paths,
-            # finding text, matched values or raw scanner errors.
-            python3 - "$scratch/report.json" "$scan_exit" "$image_id" > "$scratch/scan-outcome" <<'PY'
+            # Findings may proceed only if the isolated verifier binds every
+            # one to the exact documented public happy-dom fixture.
+            if [[ "$scan_exit" == 1 ]]; then
+              [[ ! -s "$scratch/trivy.log" ]]
+              # Categorize candidates only. These counts are not exemptions or
+              # proof that a matching value is the public example.
+              python3 - "$scratch/report.json" "$image_id" > "$scratch/finding-counts" <<'PY'
+          import json, pathlib, sys
+          try:
+              p = pathlib.Path(sys.argv[1])
+              if p.stat().st_size > 64 * 1024 * 1024:
+                  raise ValueError()
+              d = json.loads(p.read_bytes())
+              if d.get('SchemaVersion') != 2 or d.get('ArtifactType') != 'container_image' or d.get('Metadata', {}).get('ImageID') != sys.argv[2] or not isinstance(d.get('Results'), list):
+                  raise ValueError()
+              known_pem = {
+                  '/app/node_modules/.pnpm/happy-dom@21.0.4/node_modules/happy-dom/src/fetch/certificate/FetchHTTPSCertificate.ts',
+                  '/app/node_modules/.pnpm/happy-dom@21.0.4/node_modules/happy-dom/lib/fetch/certificate/FetchHTTPSCertificate.js',
+                  '/app/apps/space/build/server/index.js',
+              }
+              zod = '/app/node_modules/.pnpm/zod@4.6.7/node_modules/zod/src/v4/mini/tests/string.test.ts'
+              counts = [0, 0, 0]
+              for section in d['Results']:
+                  if not isinstance(section, dict) or not isinstance(section.get('Secrets', []), list):
+                      raise ValueError()
+                  for finding in section.get('Secrets', []):
+                      if not isinstance(finding, dict):
+                          raise ValueError()
+                      target, rule = section.get('Target'), finding.get('RuleID')
+                      index = 0 if target in known_pem and rule == 'private-key' else 1 if target == zod and rule == 'jwt-token' else 2
+                      counts[index] += 1
+                      if sum(counts) > 100000:
+                          raise ValueError()
+              print('COUNTS ' + ' '.join(map(str, counts)))
+          except Exception:
+              print('COUNTS_UNAVAILABLE')
+          PY
+              chmod 0444 "$scratch/report.json"
+              validator='python:3.12.12-alpine@sha256:ba94b66cc4fee436c27cbc42a6e315ead60729e8d2f109e3606a9d1bdba7bf0e'
+              docker pull --platform linux/amd64 "$validator" > "$scratch/validator-pull.log" 2>&1
+              set +e
+              timeout 270 docker run --rm --network none --read-only --user "$scanner_uid:$scanner_gid" --cap-drop ALL \
+                --security-opt no-new-privileges --pids-limit 128 --memory 2g --cpus 2 \
+                --tmpfs /tmp:rw,noexec,nosuid,size=128m --entrypoint python \
+                --mount "type=bind,src=$scratch/report.json,dst=/input/report.json,readonly" \
+                --mount "type=bind,src=$scratch/image.tar.gz,dst=/input/image.tar.gz,readonly" \
+                --mount "type=bind,src=$scratch/source/pnpm-lock.yaml,dst=/input/pnpm-lock.yaml,readonly" \
+                --mount "type=bind,src=$scratch/source/integrations/image-build/verify_trivy_fixtures.py,dst=/input/gate.py,readonly" \
+                "$validator" -I /input/gate.py /input/report.json /input/image.tar.gz /input/pnpm-lock.yaml "$image_id" "$scan_exit" \
+                > "$scratch/fixture-status" 2> "$scratch/fixture-error"
+              gate_exit=$?
+              set -e
+              if [[ "$gate_exit" != 0 || -s "$scratch/fixture-error" || "$(<"$scratch/fixture-status")" != 'SECRET_GATE PASS' ]]; then
+                printf SECRET_FINDINGS > "$scratch/phase"
+                exit 1
+              fi
+              outcome=PASS
+            else
+              # Emit only a fixed outcome; never print report content, paths,
+              # finding text, matched values or raw scanner errors.
+              python3 - "$scratch/report.json" "$scan_exit" "$image_id" > "$scratch/scan-outcome" <<'PY'
           import json, pathlib, sys
           outcome = 'SCANNER_ERROR'
           try:
@@ -212,8 +275,9 @@ jobs:
               pass
           print(outcome)
           PY
-            outcome=$(<"$scratch/scan-outcome")
-            case "$outcome" in PASS) ;; SECRET_FINDINGS) printf SECRET_FINDINGS > "$scratch/phase"; exit 1 ;; *) exit 1 ;; esac
+              outcome=$(<"$scratch/scan-outcome")
+              case "$outcome" in PASS) ;; SECRET_FINDINGS) printf SECRET_FINDINGS > "$scratch/phase"; exit 1 ;; *) exit 1 ;; esac
+            fi
             printf BUILD_ERROR > "$scratch/phase"
             [[ "$(sha256sum "$scratch/image.tar.gz" | cut -d' ' -f1)" == "$(<"$output/archive.sha256")" ]]
             mv "$scratch/image.tar.gz" "$output/image.tar.gz"
@@ -225,6 +289,14 @@ jobs:
             phase=$(<"$scratch/phase")
             case "$phase" in BUILD_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
             printf 'RESULT %s\n' "$phase" >&2
+            if [[ "$phase" == SECRET_FINDINGS && -f "$scratch/finding-counts" ]]; then
+              counts=$(<"$scratch/finding-counts")
+              if [[ "$counts" =~ ^COUNTS\ ([0-9]{1,6})\ ([0-9]{1,6})\ ([0-9]{1,6})$ ]]; then
+                printf 'CANDIDATE_COUNTS PEM=%s ZOD=%s OTHER=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" >&2
+              else
+                echo 'CANDIDATE_COUNTS UNAVAILABLE' >&2
+              fi
+            fi
             exit 1
           fi
           source_hash=$(<"$output/source.sha256")
