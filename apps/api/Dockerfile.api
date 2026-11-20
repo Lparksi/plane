@@ -51,6 +51,20 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
     && \
     uv sync --locked --inexact --no-default-groups --group production \
     && \
+    # Remove only these bundled documentation examples in the installation layer;
+    # retain SDK code and all service models used for requests and signing.
+    test -f /usr/local/lib/python3.12/site-packages/botocore/data/iam/2010-05-08/examples-1.json \
+    && test -f /usr/local/lib/python3.12/site-packages/botocore/data/sts/2011-06-15/examples-1.json \
+    && test -f /usr/local/lib/python3.12/site-packages/boto3/examples/cloudfront.rst \
+    && rm /usr/local/lib/python3.12/site-packages/botocore/data/iam/2010-05-08/examples-1.json \
+          /usr/local/lib/python3.12/site-packages/botocore/data/sts/2011-06-15/examples-1.json \
+          /usr/local/lib/python3.12/site-packages/boto3/examples/cloudfront.rst \
+    && \
+    # Offline smoke check: S3 signing, paginator, waiter and a stubbed request,
+    # plus IAM/STS client model loading, with explicit synthetic credentials.
+    AWS_EC2_METADATA_DISABLED=true AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+    python -c 'import socket; socket.socket.connect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("network disabled")); import boto3; from botocore.stub import Stubber; s = boto3.Session(aws_access_key_id="local-placeholder", aws_secret_access_key="local-placeholder", region_name="us-east-1"); c = s.client("s3", endpoint_url="http://127.0.0.1:19999"); assert c.generate_presigned_url("get_object", Params={"Bucket":"test-bucket", "Key":"example"}); assert c.generate_presigned_post("test-bucket", "example")["fields"]; assert c.get_paginator("list_objects_v2") and c.get_waiter("object_exists"); stub = Stubber(c); stub.add_response("put_object", {"ETag":"stubbed"}, {"Bucket":"test-bucket", "Key":"example", "Body":b"example"}); stub.activate(); assert c.put_object(Bucket="test-bucket", Key="example", Body=b"example")["ETag"] == "stubbed"; stub.deactivate(); assert s.client("iam") and s.client("sts")' \
+    && \
     apk del .build-deps \
     && \
     rm -rf /var/cache/apk/*

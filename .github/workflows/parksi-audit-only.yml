@@ -1,0 +1,104 @@
+# Build and audit locally on ephemeral runners. This workflow never publishes images.
+name: Parksi build and audit only
+
+on:
+  push:
+    branches:
+      - release/parksi-ce-20261120
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parksi-audit-only
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'Lparksi/plane' && github.event.deleted == false
+    name: Audit ${{ matrix.component }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - component: web
+            dockerfile: apps/web/Dockerfile.web
+            context: .
+            assets: /usr/share/caddy/html
+          - component: admin
+            dockerfile: apps/admin/Dockerfile.admin
+            context: .
+            assets: /usr/share/caddy/html/god-mode
+          - component: space
+            dockerfile: apps/space/Dockerfile.space
+            context: .
+            assets: /app/apps/space/build/client
+          - component: live
+            dockerfile: apps/live/Dockerfile.live
+            context: .
+            assets: ""
+          - component: backend
+            dockerfile: apps/api/Dockerfile.api
+            context: apps/api
+            assets: ""
+    steps:
+      - name: Checkout triggering commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Lparksi/plane
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and inspect locally
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          BUILD_CONTEXT: ${{ matrix.context }}
+          ASSET_DIR: ${{ matrix.assets }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'Lparksi/plane' && "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          case "$COMPONENT" in web|admin|space|live|backend) ;; *) exit 1 ;; esac
+          available_kb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
+          (( available_kb >= 6291456 )) || { echo 'Insufficient free disk space for build.' >&2; exit 1; }
+          scratch=$(mktemp -d "$RUNNER_TEMP/plane-audit.XXXXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir "$scratch/source"
+          git archive --format=tar "$GITHUB_SHA" | tar -xf - -C "$scratch/source"
+          cd "$scratch/source"
+          node -e 'const c=require(process.argv[1]); if (!(c.tasks?.build?.env || []).includes("PLANE_SOURCE_COMMIT") && !(c.globalEnv || []).includes("PLANE_SOURCE_COMMIT")) process.exit(1)' "$scratch/source/turbo.json"
+          python3 -m unittest discover -s integrations/image-build -p 'test_audit_image.py' > "$scratch/tests.log" 2>&1 || { echo 'Audit self-tests failed.' >&2; exit 1; }
+          args=()
+          if [[ -n "$ASSET_DIR" ]]; then args+=(--build-arg "PLANE_SOURCE_COMMIT=$GITHUB_SHA"); fi
+          image="plane-audit:${COMPONENT}"
+          # Build and test output is kept local, not echoed or uploaded. A file
+          # size limit prevents unexpectedly verbose tools from filling the disk.
+          (ulimit -f 131072; docker buildx build --platform linux/amd64 --load --progress plain \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            "${args[@]}" --file "$DOCKERFILE" --tag "$image" "$BUILD_CONTEXT" > "$scratch/build.log" 2>&1) \
+            || { echo 'Local image build failed; build output was not published.' >&2; exit 1; }
+          [[ "$(docker image inspect "$image" --format '{{.Architecture}}')" == 'amd64' ]]
+          [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+          if [[ -n "$ASSET_DIR" ]]; then
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --pids-limit 100 --memory 128m --entrypoint sh "$image" -c '
+                find "$1" -type f -name "*.js" | (
+                  while IFS= read -r file; do
+                    if grep -Fq -- "$2" "$file" && grep -Fq -- "https://github.com/Lparksi/plane/tree/" "$file"; then exit 0; fi
+                  done
+                  exit 1
+                )
+              ' _ "$ASSET_DIR" "$GITHUB_SHA" > /dev/null 2>&1 \
+              || { echo 'Frontend source-commit binding check failed.' >&2; exit 1; }
+          fi
+          docker image inspect "$image" > "$scratch/inspect.json"
+          docker image history --no-trunc "$image" > "$scratch/history.txt"
+          (ulimit -f 4194304; docker image save "$image" | gzip -1 > "$scratch/image.tar.gz") \
+            || { echo 'Local image export failed or exceeded its size limit.' >&2; exit 1; }
+          python3 integrations/image-build/audit_image.py "$scratch/image.tar.gz" "$scratch/inspect.json" "$scratch/history.txt" \
+            > "$scratch/audit.log" 2>&1 || { echo 'Image audit failed or was incomplete.' >&2; exit 1; }
+          printf 'Local build and configured image audit completed for %s. This does not prove absence of secrets.\n' "$COMPONENT"

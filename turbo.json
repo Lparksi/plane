@@ -36,6 +36,7 @@
   },
   "tasks": {
     "build": {
+      "env": ["PLANE_SOURCE_COMMIT"],
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["dist/**", "build/**", ".react-router/**"]
