@@ -1,5 +1,5 @@
-# Build and scan five commit-bound images locally. No upload or publication.
-name: Parksi release image build and scan
+# Build, scan and smoke the same commit-bound images before GHCR publication.
+name: Parksi release image publish
 
 on:
   push:
@@ -9,11 +9,30 @@ on:
 permissions: {}
 
 concurrency:
-  group: parksi-release-build-scan
+  group: parksi-release-publish
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: github.repository == 'Lparksi/plane' && github.event.deleted == false
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      nonce: ${{ steps.namespace.outputs.nonce }}
+    steps:
+      - name: Generate a unique run namespace
+        id: namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' && "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          nonce=$(openssl rand -hex 16)
+          [[ "$nonce" =~ ^[0-9a-f]{32}$ ]]
+          printf 'nonce=%s\n' "$nonce" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     if: github.repository == 'Lparksi/plane' && github.event.deleted == false
     name: Build and inspect ${{ matrix.component }}
     permissions:
@@ -59,16 +78,18 @@ jobs:
           DOCKERFILE: ${{ matrix.dockerfile }}
           BUILD_CONTEXT: ${{ matrix.context }}
           ASSET_DIR: ${{ matrix.assets }}
+          RELEASE_NONCE: ${{ needs.prepare.outputs.nonce }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == 'Lparksi/plane' && "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' ]]
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
           case "$COMPONENT" in web|admin|space|live|backend) ;; *) exit 1 ;; esac
+          [[ "$RELEASE_NONCE" =~ ^[0-9a-f]{32}$ ]]
           available_kb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
           (( available_kb >= 6291456 )) || { echo 'Insufficient runner disk.' >&2; exit 1; }
           scratch=$(mktemp -d "$RUNNER_TEMP/plane-release.XXXXXXXX")
           output="$RUNNER_TEMP/plane-output-$COMPONENT"
-          trap 'rm -rf "$scratch" "$output"' EXIT
+          trap 'rm -rf "$scratch"' EXIT
           mkdir -m 700 "$output" "$scratch/source" "$scratch/docker-config" "$scratch/scanner"
           export DOCKER_CONFIG="$scratch/docker-config"
           unset ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN GITHUB_TOKEN GH_TOKEN
@@ -132,8 +153,26 @@ jobs:
                   )
                 ' _ "$ASSET_DIR" "$GITHUB_SHA" > /dev/null 2>&1
             fi
-            # Build once; the same archive is scanned, transferred and loaded.
-            (ulimit -f 4194304; docker image save "$image" | gzip -1 > "$scratch/image.tar.gz")
+            # Build once; the immutable image ID is smoked and exported, then
+            # that same archive is scanned, transferred and loaded.
+            printf SMOKE_ERROR > "$scratch/phase"
+            if [[ "$COMPONENT" == live || "$COMPONENT" == backend ]]; then
+              export SMOKE_REDIS_IMAGE='valkey/valkey:7.2.11-alpine@sha256:4c8d459cc26a2a7f55109fcafea181df38eb63c3ea193c0db21263dd4d6240d9'
+              docker pull --platform linux/amd64 "$SMOKE_REDIS_IMAGE" > "$scratch/redis-pull.log" 2>&1
+            fi
+            if [[ "$COMPONENT" == backend ]]; then
+              export SMOKE_POSTGRES_IMAGE='postgres:15.7-alpine@sha256:cd323413f3ec037de622fdc2724215170f32045f6ac5a940d80e988862df45ea'
+              export SMOKE_RABBIT_IMAGE='rabbitmq:3.13.6-management-alpine@sha256:567378bee7c4b7401bc5165e3ff406c4481ae3cbd9daed4ad3c2821bd97ae5f4'
+              export SMOKE_S3_IMAGE='pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:39aab3c365848e32aca7b76c5b57f86d1cbca02d7b8f24e1fd1feff9fedddae5'
+              for dependency in "$SMOKE_POSTGRES_IMAGE" "$SMOKE_RABBIT_IMAGE" "$SMOKE_S3_IMAGE"; do
+                docker pull --platform linux/amd64 "$dependency" > "$scratch/smoke-pull.log" 2>&1
+              done
+            fi
+            timeout 600 bash integrations/image-build/smoke-image.sh "$COMPONENT" "$image_id" > "$scratch/smoke.log" 2>&1
+            printf "SMOKE PASS %s\n" "$COMPONENT" > "$scratch/expected-smoke"
+            cmp -s "$scratch/expected-smoke" "$scratch/smoke.log"
+            printf BUILD_ERROR > "$scratch/phase"
+            (ulimit -f 4194304; docker image save "$image_id" | gzip -1 > "$scratch/image.tar.gz")
             sha256sum "$scratch/image.tar.gz" | cut -d' ' -f1 > "$output/archive.sha256"
             chmod 0444 "$scratch/image.tar.gz"
             printf SCANNER_ERROR > "$scratch/phase"
@@ -186,8 +225,8 @@ jobs:
               > "$scratch/report.json" 2> "$scratch/trivy.log"
             scan_exit=$?
             set -e
-            # Findings may proceed only if the isolated verifier binds every
-            # one to the exact documented public happy-dom fixture.
+            # Findings may proceed only if the component-specific isolated
+            # verifier binds every one to an exact documented public fixture.
             if [[ "$scan_exit" == 1 ]]; then
               [[ ! -s "$scratch/trivy.log" ]]
               # Categorize candidates only. These counts are not exemptions or
@@ -224,6 +263,11 @@ jobs:
               print('COUNTS_UNAVAILABLE')
           PY
               chmod 0444 "$scratch/report.json"
+              case "$COMPONENT" in
+                space|live) fixture_gate='integrations/image-build/verify_trivy_fixtures.py'; fixture_lock='pnpm-lock.yaml' ;;
+                backend) fixture_gate='integrations/image-build/verify_backend_fixtures.py'; fixture_lock='apps/api/uv.lock' ;;
+                *) printf SECRET_FINDINGS > "$scratch/phase"; exit 1 ;;
+              esac
               validator='python:3.12.12-alpine@sha256:ba94b66cc4fee436c27cbc42a6e315ead60729e8d2f109e3606a9d1bdba7bf0e'
               docker pull --platform linux/amd64 "$validator" > "$scratch/validator-pull.log" 2>&1
               set +e
@@ -232,9 +276,9 @@ jobs:
                 --tmpfs /tmp:rw,noexec,nosuid,size=128m --entrypoint python \
                 --mount "type=bind,src=$scratch/report.json,dst=/input/report.json,readonly" \
                 --mount "type=bind,src=$scratch/image.tar.gz,dst=/input/image.tar.gz,readonly" \
-                --mount "type=bind,src=$scratch/source/pnpm-lock.yaml,dst=/input/pnpm-lock.yaml,readonly" \
-                --mount "type=bind,src=$scratch/source/integrations/image-build/verify_trivy_fixtures.py,dst=/input/gate.py,readonly" \
-                "$validator" -I /input/gate.py /input/report.json /input/image.tar.gz /input/pnpm-lock.yaml "$image_id" "$scan_exit" \
+                --mount "type=bind,src=$scratch/source/$fixture_lock,dst=/input/fixture.lock,readonly" \
+                --mount "type=bind,src=$scratch/source/$fixture_gate,dst=/input/gate.py,readonly" \
+                "$validator" -I /input/gate.py /input/report.json /input/image.tar.gz /input/fixture.lock "$image_id" "$scan_exit" \
                 > "$scratch/fixture-status" 2> "$scratch/fixture-error"
               gate_exit=$?
               set -e
@@ -287,7 +331,7 @@ jobs:
           if (( result != 0 )); then
             rm -rf "$output"
             phase=$(<"$scratch/phase")
-            case "$phase" in BUILD_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
+            case "$phase" in BUILD_ERROR|SMOKE_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
             printf 'RESULT %s\n' "$phase" >&2
             if [[ "$phase" == SECRET_FINDINGS && -f "$scratch/finding-counts" ]]; then
               counts=$(<"$scratch/finding-counts")
@@ -307,3 +351,97 @@ jobs:
           printf 'Source archive SHA-256: %s; recipe SHA-256: %s.\n' "$source_hash" "$recipe_hash"
           printf 'Scanned image archive SHA-256: %s; local image config ID: %s.\n' "$archive_hash" "$image_id"
           echo 'RESULT PASS: base layers or encoded contents may be skipped; detection is not exhaustive.'
+      - name: Transfer the scanned and smoked image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plane-scanned-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.prepare.outputs.nonce }}
+          path: ${{ runner.temp }}/plane-output-${{ matrix.component }}/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Remove local output
+        if: always()
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          case "$COMPONENT" in web|admin|space|live|backend) ;; *) exit 1 ;; esac
+          rm -rf "$RUNNER_TEMP/plane-output-$COMPONENT"
+
+  publish:
+    name: Publish ${{ matrix.component }}
+    needs: [prepare, build]
+    if: ${{ success() && github.repository == 'Lparksi/plane' && github.event.deleted == false }}
+    permissions:
+      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        component: [web, admin, space, live, backend]
+    steps:
+      - name: Download same-run scanned and smoked image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: plane-scanned-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.prepare.outputs.nonce }}
+          path: ${{ runner.temp }}/plane-output
+      - name: Verify and publish the unique commit-tagged image
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          RELEASE_NONCE: ${{ needs.prepare.outputs.nonce }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'Lparksi/plane' && "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_NONCE" =~ ^[0-9a-f]{32}$ ]]
+          case "$COMPONENT" in web|admin|space|live|backend) ;; *) exit 1 ;; esac
+          scratch=$(mktemp -d "$RUNNER_TEMP/plane-publish.XXXXXXXX")
+          trap 'rm -rf "$scratch" "$RUNNER_TEMP/plane-output"' EXIT
+          export DOCKER_CONFIG="$scratch/docker-config"
+          mkdir -m 700 "$DOCKER_CONFIG"
+          set +e
+          (
+            set -euo pipefail
+            exec 3>&-
+            cd "$RUNNER_TEMP/plane-output"
+            archive_hash=$(<archive.sha256)
+            image_id=$(<config.id)
+            [[ "$archive_hash" =~ ^[0-9a-f]{64}$ && "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$(sha256sum image.tar.gz | cut -d' ' -f1)" == "$archive_hash" ]]
+            docker load --input image.tar.gz
+            [[ "$(docker image inspect "$image_id" --format '{{.Id}}')" == "$image_id" ]]
+            [[ "$(docker image inspect "$image_id" --format '{{.Architecture}}')" == 'amd64' ]]
+            [[ "$(docker image inspect "$image_id" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+            target="ghcr.io/lparksi/plane-ce-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RELEASE_NONCE}-${COMPONENT}:${GITHUB_SHA}"
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            docker tag "$image_id" "$target"
+            docker push "$target" > "$scratch/push.log" 2>&1
+            # Only a single syntactically valid manifest digest may leave the
+            # private push log. Absence is reported without retrying a push.
+            python3 - "$scratch/push.log" "$scratch/manifest-digest" <<'PY'
+          import pathlib, re, sys
+          with open(sys.argv[1], 'rb') as stream:
+              data = stream.read(10_000_001)
+          found = set(re.findall(rb'\bdigest:\s*(sha256:[0-9a-f]{64})\b', data)) if len(data) <= 10_000_000 else set()
+          result = next(iter(found)).decode('ascii') if len(found) == 1 else 'UNAVAILABLE'
+          pathlib.Path(sys.argv[2]).write_text(result)
+          PY
+          ) > "$scratch/private.log" 2>&1
+          result=$?
+          set -e
+          if (( result != 0 )); then
+            echo 'Image verification or publication failed; check registry state before retrying.' >&2
+            exit 1
+          fi
+          target="ghcr.io/lparksi/plane-ce-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RELEASE_NONCE}-${COMPONENT}:${GITHUB_SHA}"
+          digest=$(<"$scratch/manifest-digest")
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'Published %s; registry manifest digest %s.\n' "$target" "$digest"
+          else
+            printf 'Published %s; manifest digest unavailable, verify registry state.\n' "$target"
+          fi
