@@ -155,7 +155,7 @@ jobs:
             fi
             # Build once; the immutable image ID is smoked and exported, then
             # that same archive is scanned, transferred and loaded.
-            printf SMOKE_ERROR > "$scratch/phase"
+            printf SMOKE_PULL_ERROR > "$scratch/phase"
             if [[ "$COMPONENT" == live || "$COMPONENT" == backend ]]; then
               export SMOKE_REDIS_IMAGE='valkey/valkey:7.2.11-alpine@sha256:4c8d459cc26a2a7f55109fcafea181df38eb63c3ea193c0db21263dd4d6240d9'
               docker pull --platform linux/amd64 "$SMOKE_REDIS_IMAGE" > "$scratch/redis-pull.log" 2>&1
@@ -168,9 +168,23 @@ jobs:
                 docker pull --platform linux/amd64 "$dependency" > "$scratch/smoke-pull.log" 2>&1
               done
             fi
-            timeout 600 bash integrations/image-build/smoke-image.sh "$COMPONENT" "$image_id" > "$scratch/smoke.log" 2>&1
+            printf SMOKE_ERROR > "$scratch/phase"
+            smoke_exit=0
+            timeout 600 bash integrations/image-build/smoke-image.sh "$COMPONENT" "$image_id" > "$scratch/smoke.log" 2>&1 || smoke_exit=$?
             printf "SMOKE PASS %s\n" "$COMPONENT" > "$scratch/expected-smoke"
-            cmp -s "$scratch/expected-smoke" "$scratch/smoke.log"
+            if (( smoke_exit != 0 )) || ! cmp -s "$scratch/expected-smoke" "$scratch/smoke.log"; then
+              smoke_stage=UNKNOWN
+              if (( smoke_exit == 124 )); then
+                smoke_stage=TIMEOUT
+              elif (( smoke_exit != 0 )); then
+                for stage in NETWORK REDIS POSTGRES RABBIT S3 READINESS APP MIGRATION STARTUP BUCKET; do
+                  printf "SMOKE FAIL %s %s\n" "$COMPONENT" "$stage" > "$scratch/expected-smoke"
+                  if cmp -s "$scratch/expected-smoke" "$scratch/smoke.log"; then smoke_stage=$stage; break; fi
+                done
+              fi
+              printf '%s' "$smoke_stage" > "$scratch/smoke-stage"
+              exit 1
+            fi
             printf BUILD_ERROR > "$scratch/phase"
             (ulimit -f 4194304; docker image save "$image_id" | gzip -1 > "$scratch/image.tar.gz")
             sha256sum "$scratch/image.tar.gz" | cut -d' ' -f1 > "$output/archive.sha256"
@@ -331,8 +345,13 @@ jobs:
           if (( result != 0 )); then
             rm -rf "$output"
             phase=$(<"$scratch/phase")
-            case "$phase" in BUILD_ERROR|SMOKE_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
+            case "$phase" in BUILD_ERROR|SMOKE_PULL_ERROR|SMOKE_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
             printf 'RESULT %s\n' "$phase" >&2
+            if [[ "$phase" == SMOKE_ERROR && -f "$scratch/smoke-stage" ]]; then
+              smoke_stage=$(<"$scratch/smoke-stage")
+              case "$smoke_stage" in NETWORK|REDIS|POSTGRES|RABBIT|S3|READINESS|APP|MIGRATION|STARTUP|BUCKET|TIMEOUT|UNKNOWN) ;; *) smoke_stage=UNKNOWN ;; esac
+              printf 'SMOKE_STAGE %s\n' "$smoke_stage" >&2
+            fi
             if [[ "$phase" == SECRET_FINDINGS && -f "$scratch/finding-counts" ]]; then
               counts=$(<"$scratch/finding-counts")
               if [[ "$counts" =~ ^COUNTS\ ([0-9]{1,6})\ ([0-9]{1,6})\ ([0-9]{1,6})$ ]]; then

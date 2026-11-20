@@ -17,9 +17,9 @@ if [[ $# -ne 2 ]]; then printf 'SMOKE ERROR\n'; exit 2; fi
 component=$1
 case "$component" in web|admin|space|live|backend) ;; *) printf 'SMOKE ERROR\n'; exit 2 ;; esac
 
-image_id=$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL %s\n' "$component"; exit 1; }
-[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL %s\n' "$component"; exit 1; }
-temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/plane-smoke.XXXXXXXX" 2>/dev/null) || { printf 'SMOKE FAIL %s\n' "$component"; exit 1; }
+image_id=$(docker image inspect "$2" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL %s APP\n' "$component"; exit 1; }
+[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL %s APP\n' "$component"; exit 1; }
+temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/plane-smoke.XXXXXXXX" 2>/dev/null) || { printf 'SMOKE FAIL %s APP\n' "$component"; exit 1; }
 app_id=''
 redis_id=''
 db_id=''
@@ -78,37 +78,39 @@ case "$component" in
   admin) container_args+=(--network none); probe='admin' ;;
   space) container_args+=(--network none); probe='space' ;;
   live)
-    isolated_network && start_redis || { printf 'SMOKE FAIL live\n'; exit 1; }
+    isolated_network || { printf 'SMOKE FAIL live NETWORK\n'; exit 1; }
+    start_redis || { printf 'SMOKE FAIL live REDIS\n'; exit 1; }
     container_args+=(--network "$network" --env API_BASE_URL=http://127.0.0.1:9 \
       --env LIVE_SERVER_SECRET_KEY=synthetic-smoke-key --env REDIS_URL=redis://smoke-redis:6379/0)
     probe='live' ;;
   backend)
-    isolated_network && start_redis || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    db_image=$(docker image inspect "${SMOKE_POSTGRES_IMAGE:-postgres:15.7-alpine}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    mq_image=$(docker image inspect "${SMOKE_RABBIT_IMAGE:-rabbitmq:3.13.6-management-alpine}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    s3_image=$(docker image inspect "${SMOKE_S3_IMAGE:-pgsty/silo:RELEASE.2026-09-16T00-00-00Z}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    for dependency in "$db_image" "$mq_image" "$s3_image"; do
-      [[ "$dependency" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    done
+    isolated_network || { printf 'SMOKE FAIL backend NETWORK\n'; exit 1; }
+    start_redis || { printf 'SMOKE FAIL backend REDIS\n'; exit 1; }
+    db_image=$(docker image inspect "${SMOKE_POSTGRES_IMAGE:-postgres:15.7-alpine}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend POSTGRES\n'; exit 1; }
+    [[ "$db_image" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend POSTGRES\n'; exit 1; }
+    mq_image=$(docker image inspect "${SMOKE_RABBIT_IMAGE:-rabbitmq:3.13.6-management-alpine}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend RABBIT\n'; exit 1; }
+    [[ "$mq_image" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend RABBIT\n'; exit 1; }
+    s3_image=$(docker image inspect "${SMOKE_S3_IMAGE:-pgsty/silo:RELEASE.2026-09-16T00-00-00Z}" --format '{{.Id}}' 2>/dev/null) || { printf 'SMOKE FAIL backend S3\n'; exit 1; }
+    [[ "$s3_image" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend S3\n'; exit 1; }
     db_id=$(docker run --detach --pull never --network "$network" --network-alias smoke-db --memory 512m --pids-limit 128 \
       --tmpfs /var/lib/postgresql/data:rw,mode=1777 --env POSTGRES_USER=smoke --env POSTGRES_PASSWORD=synthetic-smoke-db \
-      --env POSTGRES_DB=smoke "$db_image" 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
+      --env POSTGRES_DB=smoke "$db_image" 2>/dev/null) || { printf 'SMOKE FAIL backend POSTGRES\n'; exit 1; }
+    [[ "$db_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend POSTGRES\n'; exit 1; }
     mq_id=$(docker run --detach --pull never --network "$network" --network-alias smoke-mq --memory 512m --pids-limit 256 \
       --tmpfs /var/lib/rabbitmq:rw,mode=1777 --env RABBITMQ_DEFAULT_USER=smoke --env RABBITMQ_DEFAULT_PASS=synthetic-smoke-mq \
-      --env RABBITMQ_DEFAULT_VHOST=smoke "$mq_image" 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
+      --env RABBITMQ_DEFAULT_VHOST=smoke "$mq_image" 2>/dev/null) || { printf 'SMOKE FAIL backend RABBIT\n'; exit 1; }
+    [[ "$mq_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend RABBIT\n'; exit 1; }
     s3_id=$(docker run --detach --pull never --network "$network" --network-alias smoke-s3 --memory 256m --pids-limit 128 \
       --tmpfs /export:rw,mode=1777 --env MINIO_ROOT_USER=smokeuser --env MINIO_ROOT_PASSWORD=synthetic-smoke-s3 \
-      "$s3_image" server /export 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    for dependency in "$db_id" "$mq_id" "$s3_id"; do
-      [[ "$dependency" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    done
+      "$s3_image" server /export 2>/dev/null) || { printf 'SMOKE FAIL backend S3\n'; exit 1; }
+    [[ "$s3_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend S3\n'; exit 1; }
     ready=0
     for ((i=0; i<90; i++)); do
       if timeout 4 docker exec "$db_id" pg_isready -U smoke -d smoke >/dev/null 2>&1 && \
          timeout 5 docker exec "$mq_id" rabbitmq-diagnostics -q ping >/dev/null 2>&1; then ready=1; break; fi
       sleep 1
     done
-    (( ready == 1 )) || { printf 'SMOKE FAIL backend\n'; exit 1; }
+    (( ready == 1 )) || { printf 'SMOKE FAIL backend READINESS\n'; exit 1; }
     backend_env=(--network "$network" --add-host api.github.com:127.0.0.1 \
       --env DJANGO_SETTINGS_MODULE=plane.settings.production --env SECRET_KEY=synthetic-local-smoke-only-key \
       --env HTTP_PROXY= --env HTTPS_PROXY= --env ALL_PROXY= --env http_proxy= --env https_proxy= --env all_proxy= \
@@ -121,16 +123,16 @@ case "$component" in
       --env AWS_REGION=us-east-1 --env USE_MINIO=1 --env GUNICORN_WORKERS=1 \
       --env AWS_EC2_METADATA_DISABLED=true --env IS_TEST=1 --env ALLOWED_HOSTS=127.0.0.1)
     migrator_id=$(docker run --detach --pull never --memory 768m --pids-limit 256 "${backend_env[@]}" \
-      --entrypoint /bin/bash "$image_id" ./bin/docker-entrypoint-migrator.sh 2>/dev/null) || { printf 'SMOKE FAIL backend\n'; exit 1; }
-    [[ "$migrator_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend\n'; exit 1; }
+      --entrypoint /bin/bash "$image_id" ./bin/docker-entrypoint-migrator.sh 2>/dev/null) || { printf 'SMOKE FAIL backend APP\n'; exit 1; }
+    [[ "$migrator_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL backend APP\n'; exit 1; }
     migration_exit=$(timeout 300 docker wait "$migrator_id" 2>/dev/null) || { printf 'SMOKE FAIL backend MIGRATION\n'; exit 1; }
     [[ "$migration_exit" == 0 ]] || { printf 'SMOKE FAIL backend MIGRATION\n'; exit 1; }
     container_args+=("${backend_env[@]}")
     probe='backend' ;;
 esac
 
-app_id=$(docker run "${container_args[@]}" "$image_id" 2>/dev/null) || { printf 'SMOKE FAIL %s\n' "$component"; exit 1; }
-[[ "$app_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL %s\n' "$component"; exit 1; }
+app_id=$(docker run "${container_args[@]}" "$image_id" 2>/dev/null) || { printf 'SMOKE FAIL %s APP\n' "$component"; exit 1; }
+[[ "$app_id" =~ ^[0-9a-f]{64}$ ]] || { printf 'SMOKE FAIL %s APP\n' "$component"; exit 1; }
 
 ok=0
 max_attempts=40
