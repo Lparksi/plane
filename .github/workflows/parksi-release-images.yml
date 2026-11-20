@@ -158,13 +158,16 @@ jobs:
             printf SMOKE_PULL_ERROR > "$scratch/phase"
             if [[ "$COMPONENT" == live || "$COMPONENT" == backend ]]; then
               export SMOKE_REDIS_IMAGE='valkey/valkey:7.2.11-alpine@sha256:4c8d459cc26a2a7f55109fcafea181df38eb63c3ea193c0db21263dd4d6240d9'
+              printf REDIS > "$scratch/pull-dependency"
               docker pull --platform linux/amd64 "$SMOKE_REDIS_IMAGE" > "$scratch/redis-pull.log" 2>&1
             fi
             if [[ "$COMPONENT" == backend ]]; then
               export SMOKE_POSTGRES_IMAGE='postgres:15.7-alpine@sha256:cd323413f3ec037de622fdc2724215170f32045f6ac5a940d80e988862df45ea'
-              export SMOKE_RABBIT_IMAGE='rabbitmq:3.13.6-management-alpine@sha256:567378bee7c4b7401bc5165e3ff406c4481ae3cbd9daed4ad3c2821bd97ae5f4'
+              export SMOKE_RABBIT_IMAGE='rabbitmq:3.13.6-management-alpine@sha256:567378bee7c4b7401bc5165e3ff406c4481ae3cbd9daed4ad3c2821bd97ae3f4'
               export SMOKE_S3_IMAGE='pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:39aab3c365848e32aca7b76c5b57f86d1cbca02d7b8f24e1fd1feff9fedddae5'
-              for dependency in "$SMOKE_POSTGRES_IMAGE" "$SMOKE_RABBIT_IMAGE" "$SMOKE_S3_IMAGE"; do
+              for name in POSTGRES RABBIT S3; do
+                printf '%s' "$name" > "$scratch/pull-dependency"
+                case "$name" in POSTGRES) dependency=$SMOKE_POSTGRES_IMAGE ;; RABBIT) dependency=$SMOKE_RABBIT_IMAGE ;; S3) dependency=$SMOKE_S3_IMAGE ;; esac
                 docker pull --platform linux/amd64 "$dependency" > "$scratch/smoke-pull.log" 2>&1
               done
             fi
@@ -347,6 +350,11 @@ jobs:
             phase=$(<"$scratch/phase")
             case "$phase" in BUILD_ERROR|SMOKE_PULL_ERROR|SMOKE_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
             printf 'RESULT %s\n' "$phase" >&2
+            if [[ "$phase" == SMOKE_PULL_ERROR && -f "$scratch/pull-dependency" ]]; then
+              dependency=$(<"$scratch/pull-dependency")
+              case "$dependency" in REDIS|POSTGRES|RABBIT|S3) ;; *) dependency=UNKNOWN ;; esac
+              printf 'SMOKE_PULL_DEPENDENCY %s\n' "$dependency" >&2
+            fi
             if [[ "$phase" == SMOKE_ERROR && -f "$scratch/smoke-stage" ]]; then
               smoke_stage=$(<"$scratch/smoke-stage")
               case "$smoke_stage" in NETWORK|REDIS|POSTGRES|RABBIT|S3|READINESS|APP|MIGRATION|STARTUP|BUCKET|TIMEOUT|UNKNOWN) ;; *) smoke_stage=UNKNOWN ;; esac
