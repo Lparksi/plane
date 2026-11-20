@@ -67,38 +67,82 @@ jobs:
           (( available_kb >= 6291456 )) || { echo 'Insufficient free disk space for build.' >&2; exit 1; }
           scratch=$(mktemp -d "$RUNNER_TEMP/plane-audit.XXXXXXXX")
           trap 'rm -rf "$scratch"' EXIT
-          mkdir "$scratch/source"
-          git archive --format=tar "$GITHUB_SHA" | tar -xf - -C "$scratch/source"
-          cd "$scratch/source"
-          node -e 'const c=require(process.argv[1]); if (!(c.tasks?.build?.env || []).includes("PLANE_SOURCE_COMMIT") && !(c.globalEnv || []).includes("PLANE_SOURCE_COMMIT")) process.exit(1)' "$scratch/source/turbo.json"
-          python3 -m unittest discover -s integrations/image-build -p 'test_audit_image.py' > "$scratch/tests.log" 2>&1 || { echo 'Audit self-tests failed.' >&2; exit 1; }
-          args=()
-          if [[ -n "$ASSET_DIR" ]]; then args+=(--build-arg "PLANE_SOURCE_COMMIT=$GITHUB_SHA"); fi
-          image="plane-audit:${COMPONENT}"
-          # Build and test output is kept local, not echoed or uploaded. A file
-          # size limit prevents unexpectedly verbose tools from filling the disk.
-          (ulimit -f 131072; docker buildx build --platform linux/amd64 --load --progress plain \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            "${args[@]}" --file "$DOCKERFILE" --tag "$image" "$BUILD_CONTEXT" > "$scratch/build.log" 2>&1) \
-            || { echo 'Local image build failed; build output was not published.' >&2; exit 1; }
-          [[ "$(docker image inspect "$image" --format '{{.Architecture}}')" == 'amd64' ]]
-          [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
-          if [[ -n "$ASSET_DIR" ]]; then
-            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
-              --pids-limit 100 --memory 128m --entrypoint sh "$image" -c '
-                find "$1" -type f -name "*.js" | (
-                  while IFS= read -r file; do
-                    if grep -Fq -- "$2" "$file" && grep -Fq -- "https://github.com/Lparksi/plane/tree/" "$file"; then exit 0; fi
-                  done
-                  exit 1
-                )
-              ' _ "$ASSET_DIR" "$GITHUB_SHA" > /dev/null 2>&1 \
-              || { echo 'Frontend source-commit binding check failed.' >&2; exit 1; }
+          # Keep all tool output private, including errors from source-controlled
+          # tests and tools. Only the fixed parser below can write to the job log.
+          set +e
+          (
+            set -euo pipefail
+            exec 3>&-
+            mkdir "$scratch/source"
+            git archive --format=tar "$GITHUB_SHA" | tar -xf - -C "$scratch/source"
+            cd "$scratch/source"
+            node -e 'const c=require(process.argv[1]); if (!(c.tasks?.build?.env || []).includes("PLANE_SOURCE_COMMIT") && !(c.globalEnv || []).includes("PLANE_SOURCE_COMMIT")) process.exit(1)' "$scratch/source/turbo.json"
+            python3 -m unittest discover -s integrations/image-build -p 'test_audit_image.py' > "$scratch/tests.log" 2>&1 || { echo 'Audit self-tests failed.' >&2; exit 1; }
+            args=()
+            if [[ -n "$ASSET_DIR" ]]; then args+=(--build-arg "PLANE_SOURCE_COMMIT=$GITHUB_SHA"); fi
+            image="plane-audit:${COMPONENT}"
+            # Build and test output is kept local, not echoed or uploaded. A file
+            # size limit prevents unexpectedly verbose tools from filling the disk.
+            (ulimit -f 131072; docker buildx build --platform linux/amd64 --load --progress plain \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              "${args[@]}" --file "$DOCKERFILE" --tag "$image" "$BUILD_CONTEXT" > "$scratch/build.log" 2>&1) \
+              || { echo 'Local image build failed; build output was not published.' >&2; exit 1; }
+            [[ "$(docker image inspect "$image" --format '{{.Architecture}}')" == 'amd64' ]]
+            [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+            if [[ -n "$ASSET_DIR" ]]; then
+              docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+                --pids-limit 100 --memory 128m --entrypoint sh "$image" -c '
+                  find "$1" -type f -name "*.js" | (
+                    while IFS= read -r file; do
+                      if grep -Fq -- "$2" "$file" && grep -Fq -- "https://github.com/Lparksi/plane/tree/" "$file"; then exit 0; fi
+                    done
+                    exit 1
+                  )
+                ' _ "$ASSET_DIR" "$GITHUB_SHA" > /dev/null 2>&1 \
+                || { echo 'Frontend source-commit binding check failed.' >&2; exit 1; }
+            fi
+            docker image inspect "$image" > "$scratch/inspect.json"
+            docker image history --no-trunc "$image" > "$scratch/history.txt"
+            (ulimit -f 4194304; docker image save "$image" | gzip -1 > "$scratch/image.tar.gz") \
+              || { echo 'Local image export failed or exceeded its size limit.' >&2; exit 1; }
+            if python3 integrations/image-build/audit_image.py "$scratch/image.tar.gz" "$scratch/inspect.json" "$scratch/history.txt" --machine \
+              > "$scratch/audit-status" 2> "$scratch/audit-stderr"; then audit_exit=0; else audit_exit=$?; fi
+            printf '%s' "$audit_exit" > "$scratch/exit-code"
+          ) > "$scratch/task.log" 2>&1
+          setup_exit=$?
+          set -e
+          if (( setup_exit != 0 )); then
+            echo 'Local build or audit setup failed; details were not published.' >&2
+            exit 1
           fi
-          docker image inspect "$image" > "$scratch/inspect.json"
-          docker image history --no-trunc "$image" > "$scratch/history.txt"
-          (ulimit -f 4194304; docker image save "$image" | gzip -1 > "$scratch/image.tar.gz") \
-            || { echo 'Local image export failed or exceeded its size limit.' >&2; exit 1; }
-          python3 integrations/image-build/audit_image.py "$scratch/image.tar.gz" "$scratch/inspect.json" "$scratch/history.txt" \
-            > "$scratch/audit.log" 2>&1 || { echo 'Image audit failed or was incomplete.' >&2; exit 1; }
-          printf 'Local build and configured image audit completed for %s. This does not prove absence of secrets.\n' "$COMPONENT"
+          audit_exit=$(<"$scratch/exit-code")
+          # Never echo scanner output or exceptions. Only this strict protocol
+          # and bounded counters can reach the public job log.
+          python3 -c '
+          import re, sys
+          messages = {
+              "PASS": "No configured findings; this does not prove secrets are absent",
+              "PATH": "Audit blocked by a path or filename rule",
+              "METADATA": "Audit blocked by image metadata",
+              "MATCH": "Audit blocked by a configured content rule",
+              "UNSUPPORTED": "Audit encountered unsupported or unverified content",
+              "LIMIT": "Audit stopped at a resource limit",
+              "ERROR": "Audit could not complete",
+          }
+          try:
+              with open(sys.argv[1], "rb") as f:
+                  raw = f.read(257)
+              match = re.fullmatch(rb"AUDIT_STATUS (PASS|PATH|METADATA|MATCH|UNSUPPORTED|LIMIT|ERROR) (0|[1-9][0-9]{0,5}) (0|[1-9][0-9]{0,5})\n", raw)
+              if not match or len(raw) > 256:
+                  raise ValueError()
+              code = match.group(1).decode("ascii")
+              completed, total = int(match.group(2)), int(match.group(3))
+              status = int(sys.argv[2])
+              if completed > total or total > 200000 or (code == "PASS" and (status != 0 or total == 0 or completed != total)) or (code != "PASS" and status != 1):
+                  raise ValueError()
+          except Exception:
+              print("Audit result: UNKNOWN")
+              sys.exit(1)
+          print(f"Audit result: {messages[code]}. Layers: {completed}/{total}.")
+          sys.exit(0 if code == "PASS" else 1)
+          ' "$scratch/audit-status" "$audit_exit"

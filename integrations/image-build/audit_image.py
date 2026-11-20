@@ -85,6 +85,26 @@ class AuditFailure(ValueError):
     """Controlled error with no untrusted content in its message."""
 
 
+class PathFailure(AuditFailure):
+    pass
+
+
+class MetadataFailure(AuditFailure):
+    pass
+
+
+class MatchFailure(AuditFailure):
+    pass
+
+
+class UnsupportedFailure(AuditFailure):
+    pass
+
+
+class LimitFailure(AuditFailure):
+    pass
+
+
 def path_hash(path: str) -> str:
     return hashlib.sha256(path.encode("utf-8", "surrogateescape")).hexdigest()
 
@@ -99,20 +119,20 @@ class Budget:
         self.bytes += size
         self.entries += int(entry)
         if time.monotonic() > self.deadline:
-            raise AuditFailure("Inspection time limit exceeded")
+            raise LimitFailure("Inspection time limit exceeded")
         if self.bytes > MAX_TOTAL_BYTES:
-            raise AuditFailure("Expanded byte limit exceeded")
+            raise LimitFailure("Expanded byte limit exceeded")
         if self.entries > MAX_MEMBERS:
-            raise AuditFailure("Archive member limit exceeded")
+            raise LimitFailure("Archive member limit exceeded")
 
 
 def inspect_content(source, name: str, size: int, budget: Budget, depth: int = 0) -> None:
     budget.tick(entry=True)
     if depth > MAX_DEPTH:
-        raise AuditFailure("Nested archive depth limit exceeded")
+        raise LimitFailure("Nested archive depth limit exceeded")
     reason = check_path(name)
     if reason:
-        raise AuditFailure(f"{reason}; path SHA-256: {path_hash(name)}")
+        raise PathFailure(f"{reason}; path SHA-256: {path_hash(name)}")
     first = source.read(512)
     budget.tick(len(first))
     kind = None
@@ -125,21 +145,21 @@ def inspect_content(source, name: str, size: int, budget: Budget, depth: int = 0
     elif first.startswith(b"\xfd7zXZ\x00"):
         kind = "xz"
     elif first.startswith((b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"!<arch>\n")):
-        raise AuditFailure(f"Unsupported nested archive; path SHA-256: {path_hash(name)}")
+        raise UnsupportedFailure(f"Unsupported nested archive; path SHA-256: {path_hash(name)}")
     elif len(first) >= 262 and first[257:262] == b"ustar":
         kind = "tar"
     elif name.lower().endswith((".zip", ".jar", ".whl", ".tar", ".tgz", ".tar.gz", ".gz", ".bz2", ".xz", ".zst", ".7z", ".rar", ".deb", ".rpm")):
-        raise AuditFailure(f"Unsupported or malformed archive; path SHA-256: {path_hash(name)}")
+        raise UnsupportedFailure(f"Unsupported or malformed archive; path SHA-256: {path_hash(name)}")
 
     if kind:
         if depth >= MAX_DEPTH:
-            raise AuditFailure("Nested archive depth limit exceeded")
+            raise LimitFailure("Nested archive depth limit exceeded")
         if size > MAX_ARCHIVE_BYTES:
-            raise AuditFailure(f"Archive size limit exceeded; path SHA-256: {path_hash(name)}")
+            raise LimitFailure(f"Archive size limit exceeded; path SHA-256: {path_hash(name)}")
         with tempfile.SpooledTemporaryFile(max_size=4 * 1024**2) as stored:
             label = finding(first)
             if label:
-                raise AuditFailure(f"Possible {label} in archive; path SHA-256: {path_hash(name)}")
+                raise MatchFailure(f"Possible {label} in archive; path SHA-256: {path_hash(name)}")
             stored.write(first)
             tail = first[-OVERLAP:]
             total = len(first)
@@ -147,11 +167,11 @@ def inspect_content(source, name: str, size: int, budget: Budget, depth: int = 0
                 budget.tick(len(chunk))
                 label = finding(tail + chunk)
                 if label:
-                    raise AuditFailure(f"Possible {label} in archive; path SHA-256: {path_hash(name)}")
+                    raise MatchFailure(f"Possible {label} in archive; path SHA-256: {path_hash(name)}")
                 tail = chunk[-OVERLAP:]
                 total += len(chunk)
                 if total > MAX_ARCHIVE_BYTES:
-                    raise AuditFailure("Compressed archive size limit exceeded")
+                    raise LimitFailure("Compressed archive size limit exceeded")
                 stored.write(chunk)
             stored.seek(0)
             inspect_archive(stored, kind, name, budget, depth + 1)
@@ -162,7 +182,7 @@ def inspect_content(source, name: str, size: int, budget: Budget, depth: int = 0
         budget.tick(len(data) - len(first))
         label = finding(strip_verified_public_example(name, data))
         if label:
-            raise AuditFailure(f"Possible {label}; path SHA-256: {path_hash(name)}")
+            raise MatchFailure(f"Possible {label}; path SHA-256: {path_hash(name)}")
         return
     tail = b""
     chunk = first
@@ -170,7 +190,7 @@ def inspect_content(source, name: str, size: int, budget: Budget, depth: int = 0
         data = tail + chunk
         label = finding(data)
         if label:
-            raise AuditFailure(f"Possible {label}; path SHA-256: {path_hash(name)}")
+            raise MatchFailure(f"Possible {label}; path SHA-256: {path_hash(name)}")
         tail = data[-OVERLAP:]
         chunk = source.read(CHUNK)
         budget.tick(len(chunk))
@@ -180,27 +200,27 @@ def inspect_archive(stored, kind: str, name: str, budget: Budget, depth: int) ->
     if kind == "zip":
         with zipfile.ZipFile(stored) as archive:
             if finding(archive.comment):
-                raise AuditFailure("Possible secret in archive metadata")
+                raise MatchFailure("Possible secret in archive metadata")
             entries = archive.infolist()
             if len(entries) > MAX_MEMBERS - budget.entries:
-                raise AuditFailure("Archive member limit exceeded")
+                raise LimitFailure("Archive member limit exceeded")
             seen = set()
             for entry in entries:
                 budget.tick(entry=True)
                 if entry.filename in seen or entry.flag_bits & 1:
-                    raise AuditFailure("Duplicate or encrypted archive member")
+                    raise UnsupportedFailure("Duplicate or encrypted archive member")
                 if finding(entry.extra + entry.comment):
-                    raise AuditFailure("Possible secret in archive metadata")
+                    raise MatchFailure("Possible secret in archive metadata")
                 seen.add(entry.filename)
                 if check_path(name + "/" + entry.filename):
-                    raise AuditFailure("Unsafe archive member path")
+                    raise PathFailure("Unsafe archive member path")
                 member_type = (entry.external_attr >> 16) & 0o170000
                 if member_type not in (0, 0o100000, 0o040000):
-                    raise AuditFailure("Unsupported archive member type")
+                    raise UnsupportedFailure("Unsupported archive member type")
                 if entry.is_dir():
                     continue
                 if entry.file_size > MAX_TOTAL_BYTES - budget.bytes:
-                    raise AuditFailure("Expanded byte limit exceeded")
+                    raise LimitFailure("Expanded byte limit exceeded")
                 with archive.open(entry) as source:
                     inspect_content(source, name + "/" + entry.filename, entry.file_size, budget, depth)
     elif kind == "tar":
@@ -216,7 +236,7 @@ def inspect_archive(stored, kind: str, name: str, budget: Budget, depth: int) ->
                 total += len(chunk)
                 budget.tick(len(chunk))
                 if total > MAX_ARCHIVE_BYTES:
-                    raise AuditFailure("Expanded archive size limit exceeded")
+                    raise LimitFailure("Expanded archive size limit exceeded")
                 expanded.write(chunk)
             expanded.seek(0)
             clean_name = re.sub(r"\.(?:gz|bz2|xz)$", "", name, flags=re.I)
@@ -230,18 +250,18 @@ def check_layer(layer: tarfile.TarFile, budget: Budget | None = None, depth: int
         name = prefix + "/" + entry.name if prefix else entry.name
         reason = check_path(name)
         if reason:
-            raise AuditFailure(f"{reason}; path SHA-256: {path_hash(name)}")
+            raise PathFailure(f"{reason}; path SHA-256: {path_hash(name)}")
         for key, value in entry.pax_headers.items():
             if finding((str(key) + "=" + str(value)).encode("utf-8", "surrogateescape")):
-                raise AuditFailure(f"Possible secret in archive metadata; path SHA-256: {path_hash(name)}")
+                raise MatchFailure(f"Possible secret in archive metadata; path SHA-256: {path_hash(name)}")
             if any(ord(c) < 32 and c not in "\t\n" for c in str(key) + str(value)):
-                raise AuditFailure(f"Unsafe archive metadata; path SHA-256: {path_hash(name)}")
+                raise MetadataFailure(f"Unsafe archive metadata; path SHA-256: {path_hash(name)}")
         if entry.issym() or entry.islnk():
             target = entry.linkname
             if finding(target.encode("utf-8", "surrogateescape")):
-                raise AuditFailure("Possible secret in archive link target")
+                raise MatchFailure("Possible secret in archive link target")
             if any(ord(c) < 32 or ord(c) == 127 for c in target) or "\\" in target:
-                raise AuditFailure("Unsafe archive link target")
+                raise PathFailure("Unsafe archive link target")
             # Resolve the link inside a virtual image root; never follow it.
             base = [] if target.startswith("/") or entry.islnk() else name.split("/")[:-1]
             for part in target.split("/"):
@@ -249,17 +269,17 @@ def check_layer(layer: tarfile.TarFile, budget: Budget | None = None, depth: int
                     continue
                 if part == "..":
                     if not base:
-                        raise AuditFailure("Archive link escapes image root")
+                        raise PathFailure("Archive link escapes image root")
                     base.pop()
                 else:
                     base.append(part)
             if check_path("/".join(base)):
-                raise AuditFailure("Sensitive archive link target")
+                raise PathFailure("Sensitive archive link target")
             continue
         if entry.isdir():
             continue
         if not entry.isfile():
-            raise AuditFailure("Unsupported archive member type")
+            raise UnsupportedFailure("Unsupported archive member type")
         source = layer.extractfile(entry)
         if source is None:
             raise AuditFailure("Unable to inspect image layer")
@@ -270,13 +290,13 @@ def audit_metadata(path: str) -> dict:
     with open(path, "rb") as metadata:
         data = metadata.read(10 * 1024 * 1024 + 1)
     if len(data) > 10 * 1024 * 1024:
-        raise AuditFailure("Image metadata exceeds size limit")
+        raise LimitFailure("Image metadata exceeds size limit")
     label = finding(data)
     if label:
-        raise AuditFailure(f"Possible {label} in image metadata")
+        raise MatchFailure(f"Possible {label} in image metadata")
     metadata = json.loads(data)
     if not isinstance(metadata, list) or len(metadata) != 1 or not isinstance(metadata[0], dict):
-        raise AuditFailure("Invalid image inspection metadata")
+        raise MetadataFailure("Invalid image inspection metadata")
     return metadata[0]
 
 
@@ -289,26 +309,26 @@ def manifest_layers(path: str) -> tuple[str, list[str]]:
             if entry.name != "manifest.json":
                 continue
             if manifest is not None or not entry.isfile() or entry.size > 1024 * 1024:
-                raise AuditFailure("Invalid image manifest")
+                raise MetadataFailure("Invalid image manifest")
             source = archive.extractfile(entry)
             if source is None:
-                raise AuditFailure("Missing image manifest")
+                raise MetadataFailure("Missing image manifest")
             manifest_data = source.read()
             if finding(manifest_data):
-                raise AuditFailure("Possible secret in image manifest")
+                raise MatchFailure("Possible secret in image manifest")
             manifest = json.loads(manifest_data)
     if not isinstance(manifest, list) or len(manifest) != 1 or not isinstance(manifest[0], dict):
-        raise AuditFailure("Expected exactly one image in docker-save manifest")
+        raise MetadataFailure("Expected exactly one image in docker-save manifest")
     config = manifest[0].get("Config")
     if not isinstance(config, str) or not re.fullmatch(r"(?:blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}\.json)", config):
-        raise AuditFailure("Unsupported image config path")
+        raise UnsupportedFailure("Unsupported image config path")
     layers = manifest[0].get("Layers")
     if not isinstance(layers, list) or not layers or not all(isinstance(x, str) for x in layers):
-        raise AuditFailure("Invalid image layer list")
+        raise MetadataFailure("Invalid image layer list")
     if any(not re.fullmatch(r"(?:blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}/layer\.tar)", x) for x in layers):
-        raise AuditFailure("Unsupported image layer path")
+        raise UnsupportedFailure("Unsupported image layer path")
     if len(set(layers)) != len(layers):
-        raise AuditFailure("Repeated image layers are not supported")
+        raise UnsupportedFailure("Repeated image layers are not supported")
     return config, layers
 
 
@@ -320,56 +340,56 @@ def image_config(path: str, config_name: str, layers: list[str], inspected: dict
         for entry in archive:
             budget.tick(entry.size, entry=True)
             if check_path(entry.name):
-                raise AuditFailure("Unsafe image archive entry")
+                raise PathFailure("Unsafe image archive entry")
             if entry.name in seen:
                 raise AuditFailure("Duplicate image archive entry")
             seen.add(entry.name)
             if entry.isdir():
                 continue
             if not entry.isfile():
-                raise AuditFailure("Unsupported image archive entry")
+                raise UnsupportedFailure("Unsupported image archive entry")
             if entry.name in layers:
                 continue
             if entry.name == config_name:
                 if config_data is not None or entry.size > 10 * 1024 * 1024:
-                    raise AuditFailure("Invalid image config")
+                    raise MetadataFailure("Invalid image config")
                 source = archive.extractfile(entry)
                 if source is None:
-                    raise AuditFailure("Missing image config")
+                    raise MetadataFailure("Missing image config")
                 config_data = source.read()
                 continue
             # OCI metadata may contain extra manifest/index descriptors. Inspect
             # each small JSON descriptor; reject all other unreferenced data.
             descriptor_blob = re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", entry.name)
             if entry.name not in {"manifest.json", "repositories", "index.json", "oci-layout"} and not descriptor_blob:
-                raise AuditFailure("Unreferenced image archive content")
+                raise UnsupportedFailure("Unreferenced image archive content")
             if entry.size > 2 * 1024 * 1024:
-                raise AuditFailure("Image descriptor exceeds size limit")
+                raise LimitFailure("Image descriptor exceeds size limit")
             source = archive.extractfile(entry)
             if source is None:
                 raise AuditFailure("Missing image descriptor")
             data = source.read()
             if finding(data):
-                raise AuditFailure("Possible secret in image descriptor")
+                raise MatchFailure("Possible secret in image descriptor")
             if descriptor_blob and hashlib.sha256(data).hexdigest() != entry.name.rsplit("/", 1)[-1]:
-                raise AuditFailure("Image descriptor digest mismatch")
+                raise MetadataFailure("Image descriptor digest mismatch")
             json.loads(data)
     if config_data is None:
-        raise AuditFailure("Missing image config")
+        raise MetadataFailure("Missing image config")
     if finding(config_data):
-        raise AuditFailure("Possible secret in image config")
+        raise MatchFailure("Possible secret in image config")
     config_digest = hashlib.sha256(config_data).hexdigest()
     named_digest = config_name.rsplit("/", 1)[-1].removesuffix(".json")
     if config_digest != named_digest:
-        raise AuditFailure("Image config digest mismatch")
+        raise MetadataFailure("Image config digest mismatch")
     if inspected is not None and inspected.get("Id") != "sha256:" + config_digest:
-        raise AuditFailure("Inspected image ID does not match archive config")
+        raise MetadataFailure("Inspected image ID does not match archive config")
     config = json.loads(config_data)
     if not isinstance(config, dict):
-        raise AuditFailure("Invalid image config")
+        raise MetadataFailure("Invalid image config")
     diffids = config.get("rootfs", {}).get("diff_ids")
     if not isinstance(diffids, list) or not all(isinstance(x, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", x) for x in diffids):
-        raise AuditFailure("Invalid image diff IDs")
+        raise MetadataFailure("Invalid image diff IDs")
     return config
 
 
@@ -429,9 +449,9 @@ def audit(path: str, inspected: dict | None = None) -> int:
     config = image_config(path, config_name, layers, inspected)
     diffids = config["rootfs"]["diff_ids"]
     if len(diffids) != len(layers):
-        raise AuditFailure("Image layer and diff ID counts differ")
+        raise MetadataFailure("Image layer and diff ID counts differ")
     if inspected is not None and inspected.get("RootFS", {}).get("Layers") != diffids:
-        raise AuditFailure("Inspected image layers do not match archive config")
+        raise MetadataFailure("Inspected image layers do not match archive config")
     expected = dict(zip(layers, diffids, strict=True))
     inspected_layers: set[str] = set()
     budget = Budget()
@@ -455,7 +475,7 @@ def audit(path: str, inspected: dict | None = None) -> int:
             elif head.startswith(b"\xfd7zXZ\x00"):
                 expanded = lzma.LZMAFile(stream)
             elif head.startswith(b"\x28\xb5\x2f\xfd"):
-                raise AuditFailure("Unsupported image layer compression")
+                raise UnsupportedFailure("Unsupported image layer compression")
             else:
                 expanded = stream
             uncompressed = DigestReader(expanded)
@@ -466,9 +486,9 @@ def audit(path: str, inspected: dict | None = None) -> int:
             while compressed.read(CHUNK):
                 budget.tick()
             if entry.name.startswith("blobs/sha256/") and compressed.digest.hexdigest() != entry.name.rsplit("/", 1)[-1]:
-                raise AuditFailure("Image layer digest mismatch")
+                raise MetadataFailure("Image layer digest mismatch")
             if "sha256:" + uncompressed.digest.hexdigest() != expected[entry.name]:
-                raise AuditFailure("Image layer order or diff ID mismatch")
+                raise MetadataFailure("Image layer order or diff ID mismatch")
             inspected_layers.add(entry.name)
             PROGRESS["completed"] = len(inspected_layers)
     if inspected_layers != set(layers):
@@ -476,40 +496,79 @@ def audit(path: str, inspected: dict | None = None) -> int:
     return len(inspected_layers)
 
 
-if __name__ == "__main__":
-    def timeout_handler(_signal, _frame):
-        raise AuditFailure("Inspection time limit exceeded")
+def main(arguments: list[str]) -> int:
+    machine = bool(arguments and arguments[-1] == "--machine")
+    args = arguments[:-1] if machine else arguments
+    PROGRESS.update(completed=0, total=0)
+    code = "ERROR"
+    count = 0
 
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.setitimer(signal.ITIMER_REAL, MAX_SECONDS)
-    # Bound parser allocations and temporary spool size even before malformed
-    # archive metadata can be processed by a library parser.
-    for limit, ceiling in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_FSIZE, MAX_ARCHIVE_BYTES)):
-        soft, hard = resource.getrlimit(limit)
-        if soft == resource.RLIM_INFINITY or soft > ceiling:
-            resource.setrlimit(limit, (min(ceiling, hard) if hard != resource.RLIM_INFINITY else ceiling, hard))
+    def timeout_handler(_signal, _frame):
+        raise LimitFailure("Inspection time limit exceeded")
+
     try:
-        inspected = audit_metadata(sys.argv[2])
-        if len(sys.argv) > 3 and sys.argv[3] != "--base":
-            with open(sys.argv[3], "rb") as history:
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, MAX_SECONDS)
+        # Bound parser allocations before malformed metadata can be processed.
+        for limit, ceiling in ((resource.RLIMIT_AS, 1024**3), (resource.RLIMIT_FSIZE, MAX_ARCHIVE_BYTES)):
+            soft, hard = resource.getrlimit(limit)
+            if soft == resource.RLIM_INFINITY or soft > ceiling:
+                resource.setrlimit(limit, (min(ceiling, hard) if hard != resource.RLIM_INFINITY else ceiling, hard))
+        if not (len(args) in (2, 3) or (len(args) == 5 and args[2] == "--base")):
+            raise AuditFailure("Invalid arguments")
+        inspected = audit_metadata(args[1])
+        if len(args) == 3:
+            with open(args[2], "rb") as history:
                 data = history.read(10 * 1024 * 1024 + 1)
                 if len(data) > 10 * 1024 * 1024:
-                    raise AuditFailure("Image history exceeds size limit")
+                    raise LimitFailure("Image history exceeds size limit")
                 if finding(data):
-                    raise AuditFailure("Possible secret in image history")
-        if not (len(sys.argv) == 6 and sys.argv[3] == "--base"):
+                    raise MatchFailure("Possible secret in image history")
+        if not machine and len(args) != 5:
             print("Layer provenance unverified; inspecting every layer without exemptions.", flush=True)
-        count = audit(sys.argv[1], inspected)
-        if len(sys.argv) == 6 and sys.argv[3] == "--base":
-            matched, added = classify_layers(inspected, sys.argv[4], sys.argv[5])
-            print(f"Digest-matched base layers: {matched}; subsequent layers: {added}. All were inspected.")
-    except AuditFailure as error:
-        print(f"INCOMPLETE: fully inspected layers {PROGRESS['completed']}/{PROGRESS['total']}", file=sys.stderr)
-        print(f"Image audit failed: {error}", file=sys.stderr)
-        sys.exit(1)
-    except Exception:
-        # Parser and OS errors can contain untrusted archive names or text.
-        print(f"INCOMPLETE: fully inspected layers {PROGRESS['completed']}/{PROGRESS['total']}", file=sys.stderr)
-        print("Image audit failed: unreadable or malformed image archive or metadata", file=sys.stderr)
-        sys.exit(1)
-    print(f"Inspected {count} image layers; no configured high-confidence findings. This is not proof that secrets are absent.")
+        count = audit(args[0], inspected)
+        if len(args) == 5:
+            matched, added = classify_layers(inspected, args[3], args[4])
+            if not machine:
+                print(f"Digest-matched base layers: {matched}; subsequent layers: {added}. All were inspected.")
+        code = "PASS"
+    except BaseException as error:
+        # The machine protocol emits fixed enum values, never exception text.
+        if isinstance(error, PathFailure):
+            code = "PATH"
+        elif isinstance(error, MetadataFailure):
+            code = "METADATA"
+        elif isinstance(error, MatchFailure):
+            code = "MATCH"
+        elif isinstance(error, UnsupportedFailure):
+            code = "UNSUPPORTED"
+        elif isinstance(error, LimitFailure):
+            code = "LIMIT"
+        else:
+            code = "ERROR"
+        if not machine:
+            print(f"INCOMPLETE: fully inspected layers {PROGRESS['completed']}/{PROGRESS['total']}", file=sys.stderr)
+            if isinstance(error, AuditFailure):
+                print(f"Image audit failed: {error}", file=sys.stderr)
+            else:
+                print("Image audit failed: unreadable or malformed image archive or metadata", file=sys.stderr)
+    finally:
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        except BaseException:
+            code = "ERROR"
+
+    if machine:
+        completed, total = PROGRESS.get("completed"), PROGRESS.get("total")
+        if not (type(completed) is int and type(total) is int and 0 <= completed <= total <= MAX_MEMBERS):
+            code, completed, total = "ERROR", 0, 0
+        elif code == "PASS" and (total == 0 or completed != total or count != total):
+            code, completed, total = "ERROR", 0, 0
+        print(f"AUDIT_STATUS {code} {completed} {total}")
+    elif code == "PASS":
+        print(f"Inspected {count} image layers; no configured high-confidence findings. This is not proof that secrets are absent.")
+    return 0 if code == "PASS" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

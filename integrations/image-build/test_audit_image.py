@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # See the LICENSE file for details.
 
+import contextlib
 import gzip
 import hashlib
 import importlib.util
@@ -266,6 +267,50 @@ class ImageAuditTests(unittest.TestCase):
         self.assertNotIn(token, result.stderr)
         self.assertNotIn("\x1b", result.stderr)
         self.assertIn("path SHA-256: " + hashlib.sha256(path.encode()).hexdigest(), result.stderr)
+
+    def test_machine_protocol_uses_only_fixed_codes_and_swallows_exception_text(self):
+        token = "ghp_" + "a" * 36
+        cases = [
+            (audit.PathFailure(token + "\x1b[31m"), "PATH"),
+            (audit.MetadataFailure(token), "METADATA"),
+            (audit.MatchFailure(token), "MATCH"),
+            (audit.UnsupportedFailure(token), "UNSUPPORTED"),
+            (audit.LimitFailure(token), "LIMIT"),
+            (RuntimeError(token + "\x1b[31m"), "ERROR"),
+            (SystemExit(token), "ERROR"),
+            (KeyboardInterrupt(), "ERROR"),
+        ]
+        for error, code in cases:
+            with self.subTest(code=code):
+                out, err = io.StringIO(), io.StringIO()
+                def fail(*_):
+                    audit.PROGRESS.update(completed=1, total=3)
+                    raise error
+                with patch.object(audit, "audit_metadata", return_value={}), patch.object(audit, "audit", side_effect=fail), \
+                     patch.object(audit.signal, "signal"), patch.object(audit.signal, "setitimer"), \
+                     patch.object(audit.resource, "getrlimit", return_value=(0, 0)), \
+                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    status = audit.main(["file", "metadata", "--machine"])
+                self.assertEqual(status, 1)
+                self.assertEqual(out.getvalue(), f"AUDIT_STATUS {code} 1 3\n")
+                self.assertEqual(err.getvalue(), "")
+                self.assertNotIn(token, out.getvalue())
+                self.assertNotIn("\x1b", out.getvalue())
+
+    def test_machine_protocol_pass_and_invalid_progress(self):
+        for progress, expected, status in [((3, 3), "PASS 3 3", 0), ((0, 0), "ERROR 0 0", 1), ((4, 3), "ERROR 0 0", 1), ((0, 200001), "ERROR 0 0", 1)]:
+            out, err = io.StringIO(), io.StringIO()
+            def run(*_):
+                audit.PROGRESS.update(completed=progress[0], total=progress[1])
+                return 3
+            with patch.object(audit, "audit_metadata", return_value={}), patch.object(audit, "audit", side_effect=run), \
+                 patch.object(audit.signal, "signal"), patch.object(audit.signal, "setitimer"), \
+                 patch.object(audit.resource, "getrlimit", return_value=(0, 0)), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                actual = audit.main(["file", "metadata", "--machine"])
+            self.assertEqual(actual, status)
+            self.assertEqual(out.getvalue(), "AUDIT_STATUS " + expected + "\n")
+            self.assertEqual(err.getvalue(), "")
 
     def test_metadata_scanned(self):
         path = Path(self.dir.name) / "metadata.json"
