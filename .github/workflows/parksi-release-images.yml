@@ -1,0 +1,237 @@
+# Build and scan five commit-bound images locally. No upload or publication.
+name: Parksi release image build and scan
+
+on:
+  push:
+    branches:
+      - release/parksi-ce-20261120
+
+permissions: {}
+
+concurrency:
+  group: parksi-release-build-scan
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'Lparksi/plane' && github.event.deleted == false
+    name: Build and inspect ${{ matrix.component }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - component: web
+            dockerfile: apps/web/Dockerfile.web
+            context: .
+            assets: /usr/share/caddy/html
+          - component: admin
+            dockerfile: apps/admin/Dockerfile.admin
+            context: .
+            assets: /usr/share/caddy/html/god-mode
+          - component: space
+            dockerfile: apps/space/Dockerfile.space
+            context: .
+            assets: /app/apps/space/build/client
+          - component: live
+            dockerfile: apps/live/Dockerfile.live
+            context: .
+            assets: ''
+          - component: backend
+            dockerfile: apps/api/Dockerfile.api
+            context: apps/api
+            assets: ''
+    steps:
+      - name: Checkout triggering commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Lparksi/plane
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and run isolated vendor secret scan
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          BUILD_CONTEXT: ${{ matrix.context }}
+          ASSET_DIR: ${{ matrix.assets }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'Lparksi/plane' && "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          case "$COMPONENT" in web|admin|space|live|backend) ;; *) exit 1 ;; esac
+          available_kb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
+          (( available_kb >= 6291456 )) || { echo 'Insufficient runner disk.' >&2; exit 1; }
+          scratch=$(mktemp -d "$RUNNER_TEMP/plane-release.XXXXXXXX")
+          output="$RUNNER_TEMP/plane-output-$COMPONENT"
+          trap 'rm -rf "$scratch" "$output"' EXIT
+          mkdir -m 700 "$output" "$scratch/source" "$scratch/docker-config" "$scratch/scanner"
+          export DOCKER_CONFIG="$scratch/docker-config"
+          unset ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN GITHUB_TOKEN GH_TOKEN
+          printf BUILD_ERROR > "$scratch/phase"
+          set +e
+          (
+            set -euo pipefail
+            exec 3>&-
+            git archive --format=tar "$GITHUB_SHA" > "$scratch/source.tar"
+            sha256sum "$scratch/source.tar" | cut -d' ' -f1 > "$output/source.sha256"
+            tar -xf "$scratch/source.tar" -C "$scratch/source"
+            rm "$scratch/source.tar"
+            cd "$scratch/source"
+            node -e 'const c=require(process.argv[1]); if (!(c.tasks?.build?.env || []).includes("PLANE_SOURCE_COMMIT") && !(c.globalEnv || []).includes("PLANE_SOURCE_COMMIT")) process.exit(1)' "$scratch/source/turbo.json"
+            # Keep source immutable; write a deterministic, reviewable Dockerfile
+            # containing only exact base digest and known plugin-version pins.
+            python3 - "$DOCKERFILE" "$COMPONENT" "$scratch/pinned.Dockerfile" <<'PY'
+          from pathlib import Path
+          import re, sys
+          path, component, output = sys.argv[1:]
+          s = Path(path).read_text()
+          substitutions = {}
+          if component in {'web', 'admin', 'space', 'live'}:
+              substitutions['FROM node:22-alpine AS base'] = 'FROM node:22-alpine@sha256:12f54cafa58d0e96554ae05871e29663ff7241836377dc9a7916449b8adb062c AS base'
+          if component in {'web', 'admin'}:
+              substitutions['FROM caddy:2.11.7-builder-alpine AS caddy-builder'] = 'FROM caddy:2.11.7-builder-alpine@sha256:420db7c0f6927c7e8140c666628915fb4a9141282fc5c344716ebf3879fe8f9b AS caddy-builder'
+              substitutions['FROM caddy:2.11.4-alpine AS production'] = 'FROM caddy:2.11.4-alpine@sha256:040e9f7480b80b6d4a7e5013a21159b950a63dcbdb956e38abe2387fb28d9ec0 AS production'
+              substitutions['--with github.com/mholt/caddy-ratelimit'] = '--with github.com/mholt/caddy-ratelimit@v0.1.0'
+          if component == 'backend':
+              substitutions['FROM python:3.12.12-alpine'] = 'FROM python:3.12.12-alpine@sha256:ba94b66cc4fee436c27cbc42a6e315ead60729e8d2f109e3606a9d1bdba7bf0e'
+          for old, new in substitutions.items():
+              if s.count(old) != 1:
+                  raise ValueError('Expected Dockerfile input not found exactly once')
+              s = s.replace(old, new)
+          for line in re.findall(r'(?im)^FROM\s+(.+)$', s):
+              if not (re.fullmatch(r'base AS (?:builder|installer|runner)', line, re.I) or re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}(?: AS [A-Za-z0-9_-]+)?', line, re.I)):
+                  raise ValueError('Unsupported mutable base reference')
+          Path(output).write_text(s)
+          PY
+            sha256sum "$scratch/pinned.Dockerfile" | cut -d' ' -f1 > "$output/recipe.sha256"
+            args=()
+            if [[ -n "$ASSET_DIR" ]]; then args+=(--build-arg "PLANE_SOURCE_COMMIT=$GITHUB_SHA"); fi
+            image="plane-release:$COMPONENT"
+            (ulimit -f 131072; docker buildx build --platform linux/amd64 --load --progress plain \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label 'org.opencontainers.image.source=https://github.com/Lparksi/plane' \
+              "${args[@]}" --file "$scratch/pinned.Dockerfile" --tag "$image" "$BUILD_CONTEXT" > "$scratch/build.log" 2>&1)
+            [[ "$(docker image inspect "$image" --format '{{.Architecture}}')" == 'amd64' ]]
+            [[ "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+            image_id=$(docker image inspect "$image" --format '{{.Id}}')
+            [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf '%s\n' "$image_id" > "$output/config.id"
+            if [[ -n "$ASSET_DIR" ]]; then
+              docker run --rm --network none --read-only --user 65534:65534 --cap-drop ALL \
+                --security-opt no-new-privileges --pids-limit 100 --memory 128m --entrypoint sh "$image" -c '
+                  find "$1" -type f -name "*.js" | (
+                    while IFS= read -r file; do
+                      if grep -Fq -- "$2" "$file" && grep -Fq -- "https://github.com/Lparksi/plane/tree/" "$file"; then exit 0; fi
+                    done
+                    exit 1
+                  )
+                ' _ "$ASSET_DIR" "$GITHUB_SHA" > /dev/null 2>&1
+            fi
+            # Build once; the same archive is scanned, transferred and loaded.
+            (ulimit -f 4194304; docker image save "$image" | gzip -1 > "$scratch/image.tar.gz")
+            sha256sum "$scratch/image.tar.gz" | cut -d' ' -f1 > "$output/archive.sha256"
+            chmod 0444 "$scratch/image.tar.gz"
+            printf SCANNER_ERROR > "$scratch/phase"
+            # Fetch the official immutable vendor release; never execute before
+            # the SHA-256 pin is verified. No source-controlled scanner is used.
+            curl -fLsS --retry 3 --connect-timeout 15 --max-time 180 \
+              'https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz' -o "$scratch/trivy.tar.gz"
+            printf '%s  %s\n' 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf' "$scratch/trivy.tar.gz" | sha256sum -c -
+            tar -xzf "$scratch/trivy.tar.gz" -C "$scratch/scanner" trivy
+            chmod 0755 "$scratch/scanner/trivy"
+            printf 'FROM scratch\nCOPY trivy /trivy\nENTRYPOINT ["/trivy"]\n' > "$scratch/scanner/Dockerfile"
+            docker buildx build --platform linux/amd64 --network=none --load --tag plane-trivy-v0762:local "$scratch/scanner" > "$scratch/scanner-build.log" 2>&1
+            # Disable Trivy's broad built-in allow lists and default skip paths;
+            # no local fixture exceptions are configured.
+            cat > "$scratch/secret-config.yaml" <<'YAML'
+          skip-patterns: []
+          disable-allow-rules:
+            - dist-info
+            - tests
+            - examples
+            - vendor
+            - usr-dirs
+            - locale-dir
+            - markdown
+            - node.js
+            - golang
+            - python
+            - rubygems
+            - wordpress
+            - anaconda-log
+          YAML
+            chmod 0444 "$scratch/secret-config.yaml"
+            mkdir -m 0777 "$scratch/scanner-cache"
+            set +e
+            timeout 600 docker run --rm --network none --read-only --user 65534:65534 --cap-drop ALL \
+              --security-opt no-new-privileges --pids-limit 128 --memory 2g --cpus 2 \
+              --tmpfs /tmp:rw,noexec,nosuid,size=128m \
+              --mount "type=bind,src=$scratch/image.tar.gz,dst=/input/image.tar.gz,readonly" \
+              --mount "type=bind,src=$scratch/secret-config.yaml,dst=/input/config.yaml,readonly" \
+              --mount "type=bind,src=$scratch/scanner-cache,dst=/cache" \
+              plane-trivy-v0762:local image --cache-dir /cache --input /input/image.tar.gz \
+              --scanners secret --image-config-scanners secret --offline-scan \
+              --skip-db-update --skip-java-db-update --skip-check-update --skip-version-check \
+              --quiet --ignorefile /dev/null --secret-config /input/config.yaml --format json --exit-code 1 \
+              > "$scratch/report.json" 2> "$scratch/trivy.log"
+            scan_exit=$?
+            set -e
+            # Emit only a fixed outcome; never print report content, paths,
+            # finding text, matched values or raw scanner errors.
+            python3 - "$scratch/report.json" "$scan_exit" "$image_id" > "$scratch/scan-outcome" <<'PY'
+          import json, pathlib, sys
+          outcome = 'SCANNER_ERROR'
+          try:
+              report, code, image_id = sys.argv[1:]
+              p = pathlib.Path(report)
+              if p.stat().st_size > 64 * 1024 * 1024:
+                  raise ValueError()
+              data = json.loads(p.read_bytes())
+              if data.get('SchemaVersion') != 2 or data.get('ArtifactType') != 'container_image':
+                  raise ValueError()
+              if not isinstance(data.get('Metadata'), dict) or data['Metadata'].get('ImageID') != image_id:
+                  raise ValueError()
+              results = data.get('Results')
+              if not isinstance(results, list):
+                  raise ValueError()
+              findings = 0
+              for result in results:
+                  if not isinstance(result, dict) or not isinstance(result.get('Secrets', []), list):
+                      raise ValueError()
+                  findings += len(result.get('Secrets', []))
+              if findings and code == '1':
+                  outcome = 'SECRET_FINDINGS'
+              elif not findings and code == '0':
+                  outcome = 'PASS'
+          except Exception:
+              pass
+          print(outcome)
+          PY
+            outcome=$(<"$scratch/scan-outcome")
+            case "$outcome" in PASS) ;; SECRET_FINDINGS) printf SECRET_FINDINGS > "$scratch/phase"; exit 1 ;; *) exit 1 ;; esac
+            printf BUILD_ERROR > "$scratch/phase"
+            [[ "$(sha256sum "$scratch/image.tar.gz" | cut -d' ' -f1)" == "$(<"$output/archive.sha256")" ]]
+            mv "$scratch/image.tar.gz" "$output/image.tar.gz"
+          ) > "$scratch/private.log" 2>&1
+          result=$?
+          set -e
+          if (( result != 0 )); then
+            rm -rf "$output"
+            phase=$(<"$scratch/phase")
+            case "$phase" in BUILD_ERROR|SCANNER_ERROR|SECRET_FINDINGS) ;; *) phase=SCANNER_ERROR ;; esac
+            printf 'RESULT %s\n' "$phase" >&2
+            exit 1
+          fi
+          source_hash=$(<"$output/source.sha256")
+          recipe_hash=$(<"$output/recipe.sha256")
+          archive_hash=$(<"$output/archive.sha256")
+          image_id=$(<"$output/config.id")
+          [[ "$source_hash" =~ ^[0-9a-f]{64}$ && "$recipe_hash" =~ ^[0-9a-f]{64}$ && "$archive_hash" =~ ^[0-9a-f]{64}$ && "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'Source archive SHA-256: %s; recipe SHA-256: %s.\n' "$source_hash" "$recipe_hash"
+          printf 'Scanned image archive SHA-256: %s; local image config ID: %s.\n' "$archive_hash" "$image_id"
+          echo 'RESULT PASS: base layers or encoded contents may be skipped; detection is not exhaustive.'
