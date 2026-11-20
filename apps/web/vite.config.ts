@@ -6,13 +6,16 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 dotenv.config({ path: path.resolve(__dirname, ".env") });
 
-// Expose only vars starting with VITE_
+// Expose VITE_ variables and the non-secret, exact release source commit.
 const viteEnv = Object.keys(process.env)
   .filter((k) => k.startsWith("VITE_"))
-  .reduce<Record<string, string>>((a, k) => {
-    a[k] = process.env[k] ?? "";
-    return a;
-  }, {});
+  .reduce<Record<string, string>>(
+    (a, k) => {
+      a[k] = process.env[k] ?? "";
+      return a;
+    },
+    { PLANE_SOURCE_COMMIT: process.env.PLANE_SOURCE_COMMIT ?? "" }
+  );
 
 export default defineConfig(() => ({
   define: {

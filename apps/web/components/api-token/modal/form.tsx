@@ -69,6 +69,7 @@ const EXPIRY_SELECT_OPTIONS = [
 const defaultValues: Partial<IApiToken> = {
   label: "",
   description: "",
+  agent_name: "",
   expired_at: null,
 };
 
@@ -116,6 +117,7 @@ export function CreateApiTokenForm(props: Props) {
     const payload: Partial<IApiToken> = {
       label: data.label,
       description: data.description,
+      agent_name: data.agent_name,
     };
 
     // if never expires is toggled on, set expired_at to null
@@ -194,6 +196,23 @@ export function CreateApiTokenForm(props: Props) {
                 />
               )}
             />
+            <Controller
+              control={control}
+              name="agent_name"
+              rules={{ maxLength: 80 }}
+              render={({ field }) => (
+                <InputField
+                  {...field}
+                  type="text"
+                  size="2xl"
+                  orientation="vertical"
+                  placeholder={t("workspace_settings.settings.api_tokens.agent_name")}
+                  aria-label={t("workspace_settings.settings.api_tokens.agent_name")}
+                  maxLength={80}
+                />
+              )}
+            />
+            <p className="text-body-xs-regular text-tertiary">{t("workspace_settings.settings.api_tokens.agent_name_help")}</p>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Controller

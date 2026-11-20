@@ -27,10 +27,10 @@ class TestAPIKeyAuthentication:
             user=create_user, label="Active Token", token="active-user-token"
         )
 
-        user, returned_token = APIKeyAuthentication().validate_api_token(token.token)
+        validated_token = APIKeyAuthentication().validate_api_token(token.token)
 
-        assert user == create_user
-        assert returned_token == token.token
+        assert validated_token.user == create_user
+        assert validated_token.token == token.token
 
     @pytest.mark.django_db
     def test_validate_api_token_rejects_deactivated_user(self, create_user):

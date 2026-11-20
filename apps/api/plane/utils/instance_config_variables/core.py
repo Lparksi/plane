@@ -251,6 +251,12 @@ unsplash_config_variables = [
 ]
 
 core_config_variables = [
+    {
+        "key": "DEFAULT_LANGUAGE",
+        "value": "en",
+        "category": "GENERAL",
+        "is_encrypted": False,
+    },
     *authentication_config_variables,
     *workspace_management_config_variables,
     *google_config_variables,

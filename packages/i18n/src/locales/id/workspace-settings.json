@@ -180,7 +180,9 @@
           "last_used": "Terakhir digunakan"
         },
         "expired": "Kedaluwarsa",
-        "not_used_yet": "Belum digunakan"
+        "not_used_yet": "Belum digunakan",
+        "agent_name": "Agent name (optional)",
+        "agent_name_help": "Create a separate token for each agent to identify comments and revoke access independently. Do not give the token to ChatGPT."
       },
       "integrations": {
         "title": "Integrasi",

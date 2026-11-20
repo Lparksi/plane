@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "購読者"
     }
-  }
+  },
+  "default_language": "デフォルトの言語",
+  "feature_unavailable_community": "この機能は Community Edition では利用できません。"
 }

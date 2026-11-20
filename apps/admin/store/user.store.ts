@@ -8,6 +8,7 @@ import { action, observable, runInAction, makeObservable } from "mobx";
 // plane internal packages
 import type { TUserStatus } from "@plane/constants";
 import { EUserStatus } from "@plane/constants";
+import { setLanguage, toSupportedLanguage } from "@plane/i18n";
 import { AuthService, UserService } from "@plane/services";
 import type { IUser } from "@plane/types";
 // root store
@@ -66,6 +67,14 @@ export class UserStore implements IUserStore {
       const currentUser = await this.userService.adminDetails();
       if (currentUser) {
         await this.store.instance.fetchInstanceAdmins();
+        // Existing profile preferences take precedence over the instance default.
+        try {
+          const profile = await this.userService.profile();
+          const language = toSupportedLanguage(profile.language);
+          if (language) await setLanguage(language);
+        } catch {
+          // Profile lookup must not block access to instance administration.
+        }
         runInAction(() => {
           this.isUserLoggedIn = true;
           this.currentUser = currentUser;

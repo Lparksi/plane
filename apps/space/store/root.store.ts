@@ -5,6 +5,7 @@
  */
 
 import { enableStaticRendering } from "mobx-react";
+import { clearProfileLanguage } from "@plane/i18n";
 // store imports
 import type { IInstanceStore } from "@/store/instance.store";
 import { InstanceStore } from "@/store/instance.store";
@@ -66,6 +67,7 @@ export class RootStore {
   };
 
   reset() {
+    void clearProfileLanguage();
     localStorage.setItem("theme", "system");
     this.instance = new InstanceStore(this);
     this.user = new UserStore(this);

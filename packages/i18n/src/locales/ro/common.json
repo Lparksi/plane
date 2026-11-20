@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Abonat"
     }
-  }
+  },
+  "default_language": "Limba implicită",
+  "feature_unavailable_community": "Această funcție nu este disponibilă în Community Edition."
 }

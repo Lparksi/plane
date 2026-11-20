@@ -45,6 +45,7 @@ export interface IInstance {
 }
 
 export interface IInstanceConfig {
+  default_language?: string;
   enable_signup: boolean;
   is_workspace_creation_disabled: boolean;
   is_google_enabled: boolean;
@@ -79,6 +80,7 @@ export interface IInstanceAdmin {
 }
 
 export type TInstanceConfigurationKeys =
+  | "DEFAULT_LANGUAGE"
   | TInstanceAIConfigurationKeys
   | TInstanceEmailConfigurationKeys
   | TInstanceImageConfigurationKeys

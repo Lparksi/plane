@@ -28,8 +28,8 @@ export function ActivityCommentHeader(props: ActivityCommentHeaderProps) {
   return (
     <div className="flex min-h-6 min-w-0 items-center gap-2">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-        <div className="flex min-w-0 items-center gap-1">
-          <span className="truncate text-body-xs-medium text-primary">{author}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <span className="max-w-full shrink-0 truncate text-body-xs-medium text-primary">{author}</span>
           {action && <span className="shrink-0 text-body-xs-regular whitespace-nowrap text-tertiary">{action}</span>}
           {visibilityIcon && (
             <span className="flex size-3.5 shrink-0 items-center justify-center text-tertiary">{visibilityIcon}</span>

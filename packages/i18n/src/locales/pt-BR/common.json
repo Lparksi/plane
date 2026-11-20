@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Inscrito"
     }
-  }
+  },
+  "default_language": "Idioma padrão",
+  "feature_unavailable_community": "Este recurso não está disponível na Community Edition."
 }

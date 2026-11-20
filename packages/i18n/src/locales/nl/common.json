@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Abonnee"
     }
-  }
+  },
+  "default_language": "Standaardtaal",
+  "feature_unavailable_community": "Deze functie is niet beschikbaar in Community Edition."
 }

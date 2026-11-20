@@ -7,7 +7,7 @@
 import React, { useState } from "react";
 import { observer } from "mobx-react";
 import { HelpOutline, PagesOutline, UserAltOutline } from "@makeplane/propel/icons";
-import { TALK_TO_SALES_URL } from "@plane/constants";
+import { SOURCE_CODE_URL, TALK_TO_SALES_URL } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 // ui
 import { Icon } from "@makeplane/propel/components/icon";
@@ -52,6 +52,7 @@ export const HelpMenuRoot = observer(function HelpMenuRoot() {
           footer={
             <MenuFooter>
               <PlaneVersionNumber />
+              {!SOURCE_CODE_URL && <span>Source unavailable / 源代码未配置</span>}
             </MenuFooter>
           }
         >
@@ -60,6 +61,12 @@ export const HelpMenuRoot = observer(function HelpMenuRoot() {
             label={t("documentation")}
             onClick={() => window.open("https://go.plane.so/p-docs", "_blank")}
           />
+          {SOURCE_CODE_URL && (
+            <MenuItem
+              label="Source code / 源代码"
+              onClick={() => window.open(SOURCE_CODE_URL, "_blank", "noopener,noreferrer")}
+            />
+          )}
           <MenuItem
             icon={<Icon icon={UserAltOutline} tint="secondary" />}
             label={t("contact_sales")}

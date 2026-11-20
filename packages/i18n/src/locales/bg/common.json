@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Абонат"
     }
-  }
+  },
+  "default_language": "Език по подразбиране",
+  "feature_unavailable_community": "Тази функция не е налична в Community Edition."
 }

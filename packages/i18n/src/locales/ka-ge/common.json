@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "გამომწერი"
     }
-  }
+  },
+  "default_language": "ნაგულისხმევი ენა",
+  "feature_unavailable_community": "ეს ფუნქცია Community Edition-ში ხელმისაწვდომი არ არის."
 }

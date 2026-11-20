@@ -464,6 +464,9 @@ class IssueComment(ChangeTrackerMixin, ProjectBaseModel):
         related_name="comments",
         null=True,
     )
+    # Immutable attribution snapshot; it survives the deletion of the agent credential.
+    author_agent_name = models.CharField(max_length=80, blank=True, default="", editable=False)
+    author_agent_owner_name = models.CharField(max_length=255, blank=True, default="", editable=False)
     access = models.CharField(
         choices=(("INTERNAL", "INTERNAL"), ("EXTERNAL", "EXTERNAL")),
         default="INTERNAL",

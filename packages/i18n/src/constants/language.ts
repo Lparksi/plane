@@ -34,3 +34,7 @@ export const SUPPORTED_LANGUAGES: ILanguageOption[] = [
 ];
 
 export const LANGUAGE_STORAGE_KEY = "userLanguage";
+
+export function toSupportedLanguage(language: unknown): TLanguage | undefined {
+  return SUPPORTED_LANGUAGES.find(({ value }) => value === language)?.value;
+}

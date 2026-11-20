@@ -8,6 +8,7 @@ import { set } from "lodash-es";
 import { observable, action, makeObservable, runInAction } from "mobx";
 // plane imports
 import { InstanceService } from "@plane/services";
+import { setInstanceLanguage } from "@plane/i18n";
 import type { IInstance, IInstanceConfig } from "@plane/types";
 // store
 import type { RootStore } from "@/store/root.store";
@@ -65,6 +66,7 @@ export class InstanceStore implements IInstanceStore {
       this.isLoading = true;
       this.error = undefined;
       const instanceInfo = await this.instanceService.info();
+      await setInstanceLanguage(instanceInfo.config?.default_language);
       runInAction(() => {
         this.isLoading = false;
         this.instance = instanceInfo.instance;

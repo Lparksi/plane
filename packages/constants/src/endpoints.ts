@@ -5,6 +5,13 @@
  */
 
 export const API_BASE_URL = process.env.VITE_API_BASE_URL || "";
+// The commit is injected at build time. The repository and URL shape are fixed.
+export function sourceCodeUrl(commit: string | undefined): string | undefined {
+  return commit?.length === 40 && /^[0-9a-f]{40}$/.test(commit)
+    ? `https://github.com/Lparksi/plane/tree/${commit}`
+    : undefined;
+}
+export const SOURCE_CODE_URL = sourceCodeUrl(process.env.PLANE_SOURCE_COMMIT);
 export const API_BASE_PATH = process.env.VITE_API_BASE_PATH || "";
 export const API_URL = encodeURI(`${API_BASE_URL}${API_BASE_PATH}`);
 // God Mode Admin App Base Url

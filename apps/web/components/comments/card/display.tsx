@@ -67,9 +67,12 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
   const { getUserDetails } = useMember();
   // derived values
   const userDetails = getUserDetails(comment?.actor);
-  const displayName = comment?.actor_detail?.is_bot
+  const ownerName = comment?.actor_detail?.is_bot
     ? comment?.actor_detail?.first_name + `Bot`
     : (userDetails?.display_name ?? comment?.actor_detail?.display_name);
+  const displayName = comment.author_agent_name
+    ? `${comment.author_agent_owner_name || ownerName} 的 ${comment.author_agent_name}`
+    : ownerName;
   const avatarUrl = userDetails?.avatar_url ?? comment?.actor_detail?.avatar_url;
 
   const userReactions = activityOperations.userReactions(comment.id);
@@ -123,7 +126,16 @@ export const CommentCardDisplay = observer(function CommentCardDisplay(props: TC
       }
       header={
         <ActivityCommentHeader
-          author={displayName}
+          author={
+            comment.author_agent_name ? (
+              <span className="flex min-w-0" title={displayName}>
+                <span className="truncate">{comment.author_agent_owner_name || ownerName}</span>
+                <span className="max-w-1/2 shrink-0 truncate">{` 的 ${comment.author_agent_name}`}</span>
+              </span>
+            ) : (
+              displayName
+            )
+          }
           action="commented"
           visibilityIcon={
             showAccessSpecifier ? (

@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Підписник"
     }
-  }
+  },
+  "default_language": "Мова за замовчуванням",
+  "feature_unavailable_community": "Ця функція недоступна в Community Edition."
 }

@@ -180,7 +180,9 @@
           "last_used": "上次使用"
         },
         "expired": "已过期",
-        "not_used_yet": "尚未使用"
+        "not_used_yet": "尚未使用",
+        "agent_name": "Agent 名称（可选）",
+        "agent_name_help": "为每个 Agent 创建单独的访问令牌，以便识别评论并单独撤销授权。不要将令牌提供给 ChatGPT。"
       },
       "integrations": {
         "title": "集成",

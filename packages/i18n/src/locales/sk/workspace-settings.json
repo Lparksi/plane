@@ -180,7 +180,9 @@
           "last_used": "Naposledy použité"
         },
         "expired": "Vypršané",
-        "not_used_yet": "Zatiaľ nepoužité"
+        "not_used_yet": "Zatiaľ nepoužité",
+        "agent_name": "Agent name (optional)",
+        "agent_name_help": "Create a separate token for each agent to identify comments and revoke access independently. Do not give the token to ChatGPT."
       },
       "integrations": {
         "title": "Integrácie",

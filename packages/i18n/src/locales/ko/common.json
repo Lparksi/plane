@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "구독자"
     }
-  }
+  },
+  "default_language": "기본 언어",
+  "feature_unavailable_community": "이 기능은 Community Edition에서 사용할 수 없습니다."
 }

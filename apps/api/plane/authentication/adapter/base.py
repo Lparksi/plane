@@ -20,6 +20,7 @@ from plane.bgtasks.user_activation_email_task import user_activation_email
 
 # Module imports
 from plane.db.models import FileAsset, Profile, User, WorkspaceMemberInvite
+from plane.license.utils.instance_language import get_instance_default_language
 from plane.license.utils.instance_value import get_configuration_value
 from plane.settings.storage import S3Storage
 from plane.utils.exception_logger import log_exception
@@ -385,7 +386,7 @@ class Adapter:
                     user.avatar = avatar
 
             # Create profile
-            Profile.objects.create(user=user)
+            Profile.objects.create(user=user, language=get_instance_default_language())
 
         # Check if IDP sync is enabled and user is not signing up
         if self.check_sync_enabled() and not is_signup:

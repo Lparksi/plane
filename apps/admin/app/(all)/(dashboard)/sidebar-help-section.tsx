@@ -5,7 +5,7 @@
  */
 
 import { observer } from "mobx-react";
-import { WEB_BASE_URL } from "@plane/constants";
+import { SOURCE_CODE_URL, WEB_BASE_URL } from "@plane/constants";
 import { useTranslation } from "@plane/i18n";
 // plane internal packages
 import { Button } from "@makeplane/propel/components/button";
@@ -106,9 +106,21 @@ export const AdminSidebarHelpSection = observer(function AdminSidebarHelpSection
             side={isSidebarCollapsed ? "right" : "top"}
             align="end"
             footer={
-              instance?.current_version ? <MenuFooter>Version: v{instance.current_version}</MenuFooter> : undefined
+              <MenuFooter>
+                {instance?.current_version && <span>Version: v{instance.current_version}</span>}
+                {!SOURCE_CODE_URL && <span>Source unavailable / 源代码未配置</span>}
+              </MenuFooter>
             }
           >
+            {SOURCE_CODE_URL && (
+              <MenuLinkItem
+                href={SOURCE_CODE_URL}
+                external
+                target="_blank"
+                label="Source code / 源代码"
+                icon={<Icon icon={Github} tint="secondary" />}
+              />
+            )}
             {helpOptions.map(({ name, Icon: HelpIcon, href }) => (
               <MenuLinkItem
                 key={name}

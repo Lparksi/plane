@@ -18,6 +18,7 @@ import { PageNotFound } from "@/components/ui/not-found";
 import { usePublish, usePublishList } from "@/hooks/store/publish";
 import { useIssueFilter } from "@/hooks/store/use-issue-filter";
 import type { Route } from "./+types/layout";
+import { internalApiOrigin } from "@/app/utils/api-origin.server";
 
 const DEFAULT_TITLE = "Plane";
 const DEFAULT_DESCRIPTION = "Made with Plane, an AI-powered work management platform with publishing capabilities.";
@@ -38,8 +39,11 @@ export async function loader({ params }: Route.LoaderArgs) {
     return { metadata: null };
   }
 
+  const origin = internalApiOrigin();
+  if (!origin) return { metadata: null };
+
   try {
-    const response = await fetch(`${process.env.VITE_API_BASE_URL}/api/public/anchor/${anchor}/meta/`);
+    const response = await fetch(`${origin}/api/public/anchor/${anchor}/meta/`, { redirect: "error" });
 
     if (!response.ok) {
       return { metadata: null };
@@ -133,7 +137,7 @@ function IssuesLayout(props: Route.ComponentProps) {
   return (
     <>
       <div className="relative flex h-screen min-h-[500px] w-screen flex-col overflow-hidden">
-        <div className="relative flex h-[60px] shrink-0 items-center border-b border-subtle-1 bg-surface-1 select-none">
+        <div className="relative flex min-h-[60px] shrink-0 items-center border-b border-subtle-1 bg-surface-1 py-2 select-none">
           <IssuesNavbarRoot publishSettings={publishSettings} />
         </div>
         <div className="relative size-full overflow-hidden bg-surface-1">

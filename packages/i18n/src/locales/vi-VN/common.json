@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Người đăng ký"
     }
-  }
+  },
+  "default_language": "Ngôn ngữ mặc định",
+  "feature_unavailable_community": "Tính năng này không có trong Community Edition."
 }

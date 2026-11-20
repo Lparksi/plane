@@ -31,6 +31,8 @@ export type TIssueComment = {
   issue: string;
   issue_detail: TIssueActivityIssueDetail;
   actor: string;
+  author_agent_name?: string;
+  author_agent_owner_name?: string;
   actor_detail: TIssueActivityUserDetail;
   created_at: string;
   edited_at?: string | undefined;
@@ -126,6 +128,8 @@ export interface ProjectDetail {
 }
 
 export type TIssuePublicComment = {
+  author_agent_name?: string;
+  author_agent_owner_name?: string;
   actor_detail: ActorDetail;
   access: string;
   actor: string;

@@ -72,6 +72,14 @@ describe("ActivityCommentCard", () => {
     expect(screen.getByText("reactions")).toBeTruthy();
   });
 
+  it("keeps a long agent attribution in the existing truncating author line", () => {
+    const name = "很长的中文名字很长的中文名字很长的中文名字 的 dot";
+    render(<ActivityCommentHeader author={name} action="commented" />);
+    const author = screen.getByText(name);
+    expect(author.className).toContain("truncate");
+    expect(screen.getByText("commented")).toBeTruthy();
+  });
+
   it("marks a highlighted comment with an accent border", () => {
     const { container } = render(
       <ActivityCommentCard id="highlighted" avatar={null} header={null} highlighted>

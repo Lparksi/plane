@@ -723,11 +723,11 @@
     "details": "详情",
     "project_structure": "项目结构",
     "custom_properties": "自定义属性",
-    "your_profile": "Your profile",
-    "developer": "Developer",
-    "work_structure": "Work structure",
-    "execution": "Execution",
-    "administration": "Administration",
+    "your_profile": "您的个人资料",
+    "developer": "开发者",
+    "work_structure": "工作结构",
+    "execution": "执行",
+    "administration": "管理",
     "status": "状态",
     "tooltip": {
       "copy_to_clipboard": "复制到剪贴板",
@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "订阅者"
     }
-  }
+  },
+  "default_language": "默认语言",
+  "feature_unavailable_community": "此功能在 Community Edition 中不可用。"
 }

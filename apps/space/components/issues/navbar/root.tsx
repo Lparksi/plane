@@ -4,6 +4,8 @@
  * See the LICENSE file for details.
  */
 
+import { SOURCE_CODE_URL } from "@plane/constants";
+
 import { observer } from "mobx-react";
 import { ProjectsOutline } from "@makeplane/propel/icons";
 // components
@@ -23,9 +25,9 @@ export const IssuesNavbarRoot = observer(function IssuesNavbarRoot(props: Props)
   const { project_details } = publishSettings;
 
   return (
-    <div className="relative flex w-full justify-between gap-4 px-5">
+    <div className="relative flex w-full flex-wrap items-center justify-between gap-4 px-5">
       {/* project detail */}
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         {project_details ? (
           <span className="grid size-7 shrink-0 place-items-center">
             <ProjectLogo logo={project_details.logo_props} className="text-body-md-regular" />
@@ -39,7 +41,14 @@ export const IssuesNavbarRoot = observer(function IssuesNavbarRoot(props: Props)
           {project_details?.name || `...`}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {SOURCE_CODE_URL ? (
+          <a className="text-sm underline" href={SOURCE_CODE_URL} target="_blank" rel="noopener noreferrer">
+            Source code / 源代码
+          </a>
+        ) : (
+          <span className="text-sm">Source unavailable / 源代码未配置</span>
+        )}
         <NavbarControls publishSettings={publishSettings} />
       </div>
     </div>

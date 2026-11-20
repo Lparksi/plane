@@ -8,6 +8,7 @@ export interface IApiToken {
   created_at: string;
   created_by: string;
   description: string;
+  agent_name: string;
   expired_at: string | null;
   id: string;
   is_active: boolean;

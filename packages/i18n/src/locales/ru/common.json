@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Подписчик"
     }
-  }
+  },
+  "default_language": "Язык по умолчанию",
+  "feature_unavailable_community": "Эта функция недоступна в Community Edition."
 }

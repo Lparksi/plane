@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "訂閱者"
     }
-  }
+  },
+  "default_language": "預設語言",
+  "feature_unavailable_community": "此功能在 Community Edition 中無法使用。"
 }

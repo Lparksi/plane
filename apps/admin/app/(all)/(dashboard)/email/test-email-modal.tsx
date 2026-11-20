@@ -89,7 +89,7 @@ export function SendTestEmailModal(props: Props) {
                 {sendEmailStep === ESendEmailSteps.SEND_EMAIL
                   ? "Send test email"
                   : sendEmailStep === ESendEmailSteps.SUCCESS
-                    ? "Email send"
+                    ? "Test email accepted"
                     : "Failed"}
               </DialogTitle>
             </DialogHeading>
@@ -112,7 +112,7 @@ export function SendTestEmailModal(props: Props) {
             {sendEmailStep === ESendEmailSteps.SUCCESS && (
               <div className="flex flex-col gap-y-4 text-body-xs-regular">
                 <p>
-                  We have sent the test email to {receiverEmail}. Please check your spam folder if you cannot find it.
+                  Your SMTP server accepted the test email for {receiverEmail}. Check your inbox and spam folder.
                 </p>
                 <p>If you still cannot find it, recheck your SMTP configuration and trigger a new test email.</p>
               </div>
@@ -135,6 +135,7 @@ export function SendTestEmailModal(props: Props) {
               size="md"
               stretch="auto"
               loading={isLoading}
+              disabled={isLoading || !receiverEmail.trim()}
               onClick={handleSubmit}
               tabIndex={0}
               label={isLoading ? "Sending email" : "Send email"}

@@ -4,6 +4,8 @@
  * See the LICENSE file for details.
  */
 
+import { SOURCE_CODE_URL } from "@plane/constants";
+
 import { useEffect, useState } from "react";
 import { observer } from "mobx-react";
 import { useSearchParams } from "next/navigation";
@@ -186,6 +188,13 @@ export const AuthRoot = observer(function AuthRoot() {
           />
         )}
         <TermsAndConditions isSignUp={authMode === EAuthModes.SIGN_UP ? true : false} />
+        {SOURCE_CODE_URL ? (
+          <a className="text-sm underline" href={SOURCE_CODE_URL} target="_blank" rel="noopener noreferrer">
+            Source code / 源代码
+          </a>
+        ) : (
+          <span className="text-sm">Source unavailable / 源代码未配置</span>
+        )}
       </div>
     </div>
   );

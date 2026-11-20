@@ -4,6 +4,8 @@
  * See the LICENSE file for details.
  */
 
+import { SOURCE_CODE_URL } from "@plane/constants";
+
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { HideOutline, ShowOutline } from "@makeplane/propel/icons";
@@ -177,6 +179,13 @@ export function InstanceSignInForm() {
               />
             </div>
           </form>
+          {SOURCE_CODE_URL ? (
+            <a className="text-sm underline" href={SOURCE_CODE_URL} target="_blank" rel="noopener noreferrer">
+              Source code / 源代码
+            </a>
+          ) : (
+            <span className="text-sm">Source unavailable / 源代码未配置</span>
+          )}
         </div>
       </div>
     </>

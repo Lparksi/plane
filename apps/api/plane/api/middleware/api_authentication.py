@@ -40,7 +40,7 @@ class APIKeyAuthentication(authentication.BaseAuthentication):
         # save api token last used
         api_token.last_used = timezone.now()
         api_token.save(update_fields=["last_used"])
-        return (api_token.user, api_token.token)
+        return api_token
 
     def authenticate(self, request):
         token = self.get_api_token(request=request)
@@ -48,8 +48,10 @@ class APIKeyAuthentication(authentication.BaseAuthentication):
             return None
 
         # Validate the API token
-        user, token = self.validate_api_token(token)
+        api_token = self.validate_api_token(token)
+        # Only metadata attached after credential verification can identify an agent.
+        request.authenticated_agent_name = api_token.agent_name
 
         # Mark the underlying Django request, which is the one APITokenLogMiddleware sees
         getattr(request, "_request", request).api_key_authenticated = True
-        return user, token
+        return api_token.user, api_token.token

@@ -24,6 +24,7 @@ class APIToken(BaseModel):
     # Meta information
     label = models.CharField(max_length=255, default=generate_label_token)
     description = models.TextField(blank=True)
+    agent_name = models.CharField(max_length=80, blank=True, default="")
     is_active = models.BooleanField(default=True)
     last_used = models.DateTimeField(null=True)
 

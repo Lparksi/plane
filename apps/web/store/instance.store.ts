@@ -6,6 +6,7 @@
 
 import { observable, action, makeObservable, runInAction } from "mobx";
 // types
+import { setInstanceLanguage } from "@plane/i18n";
 import type { IInstance, IInstanceConfig } from "@plane/types";
 // services
 import { InstanceService } from "@/services/instance.service";
@@ -59,6 +60,7 @@ export class InstanceStore implements IInstanceStore {
       this.isLoading = true;
       this.error = undefined;
       const instanceInfo = await this.instanceService.getInstanceInfo();
+      await setInstanceLanguage(instanceInfo.config?.default_language);
       runInAction(() => {
         this.isLoading = false;
         this.instance = instanceInfo.instance;

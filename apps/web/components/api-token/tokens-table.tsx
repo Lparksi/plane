@@ -68,7 +68,7 @@ export function ApiTokensTable({ tokens }: Props) {
         const description = token.description?.trim();
         return (
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-body-xs-regular text-primary">{token.label}</span>
+            <span className="truncate text-body-xs-regular text-primary">{token.label}{token.agent_name ? ` · ${token.agent_name}` : ""}</span>
             {description && (
               <Tooltip label={description}>
                 {/* focusable, since the description is only reachable through this tooltip */}

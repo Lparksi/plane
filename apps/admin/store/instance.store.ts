@@ -9,6 +9,7 @@ import { observable, action, computed, makeObservable, runInAction } from "mobx"
 // plane internal packages
 import type { TInstanceStatus } from "@plane/constants";
 import { EInstanceStatus } from "@plane/constants";
+import { setInstanceLanguage } from "@plane/i18n";
 import { InstanceService } from "@plane/services";
 import type {
   IInstance,
@@ -104,6 +105,7 @@ export class InstanceStore implements IInstanceStore {
       if (this.instance === undefined) this.isLoading = true;
       this.error = undefined;
       const instanceInfo = await this.instanceService.info();
+      await setInstanceLanguage(instanceInfo.config?.default_language);
       // handling the new user popup toggle
       if (this.instance === undefined && !instanceInfo?.instance?.workspaces_exist)
         this.store.theme.toggleNewUserPopup();
@@ -218,7 +220,8 @@ export class InstanceStore implements IInstanceStore {
       await this.instanceService.disableEmail();
     } catch (_error) {
       console.error("Error disabling the email");
-      this.instanceConfigurations = instanceConfigurations;
+      runInAction(() => (this.instanceConfigurations = instanceConfigurations));
+      throw _error;
     }
   };
 }

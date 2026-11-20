@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Pelanggan"
     }
-  }
+  },
+  "default_language": "Bahasa default",
+  "feature_unavailable_community": "Fitur ini tidak tersedia di Community Edition."
 }

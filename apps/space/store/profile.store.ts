@@ -7,6 +7,7 @@
 import { set } from "lodash-es";
 import { action, makeObservable, observable, runInAction } from "mobx";
 // plane imports
+import { setLanguage, toSupportedLanguage } from "@plane/i18n";
 import { UserService } from "@plane/services";
 import type { TUserProfile } from "@plane/types";
 import { EStartOfTheWeek } from "@plane/types";
@@ -94,6 +95,8 @@ export class ProfileStore implements IProfileStore {
         this.isLoading = false;
         this.data = userProfile;
       });
+      const language = toSupportedLanguage(userProfile.language);
+      if (language) void setLanguage(language);
       return userProfile;
     } catch (_error) {
       runInAction(() => {
@@ -121,6 +124,8 @@ export class ProfileStore implements IProfileStore {
         });
       }
       const userProfile = await this.userService.updateProfile(data);
+      const language = toSupportedLanguage(userProfile.language);
+      if (language) void setLanguage(language);
       return userProfile;
     } catch (_error) {
       if (currentUserProfileData) {

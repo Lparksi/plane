@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Odběratel"
     }
-  }
+  },
+  "default_language": "Výchozí jazyk",
+  "feature_unavailable_community": "Tato funkce není v Community Edition dostupná."
 }

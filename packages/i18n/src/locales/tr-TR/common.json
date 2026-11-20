@@ -906,5 +906,7 @@
     "properties": {
       "subscriber": "Abone"
     }
-  }
+  },
+  "default_language": "Varsayılan dil",
+  "feature_unavailable_community": "Bu özellik Community Edition sürümünde kullanılamaz."
 }

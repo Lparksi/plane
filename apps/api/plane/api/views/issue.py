@@ -1585,7 +1585,15 @@ class IssueCommentListCreateAPIEndpoint(BaseAPIView):
 
         serializer = IssueCommentCreateSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(project_id=project_id, issue_id=issue_id, actor=request.user)
+            serializer.save(
+                project_id=project_id,
+                issue_id=issue_id,
+                actor=request.user,
+                author_agent_name=getattr(request, "authenticated_agent_name", ""),
+                author_agent_owner_name=(
+                    request.user.display_name if getattr(request, "authenticated_agent_name", "") else ""
+                ),
+            )
             issue_comment = IssueComment.objects.get(pk=serializer.instance.id)
 
             issue_activity.delay(

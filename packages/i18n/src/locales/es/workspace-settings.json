@@ -180,7 +180,9 @@
           "last_used": "Último uso"
         },
         "expired": "Expirado",
-        "not_used_yet": "Aún sin usar"
+        "not_used_yet": "Aún sin usar",
+        "agent_name": "Agent name (optional)",
+        "agent_name_help": "Create a separate token for each agent to identify comments and revoke access independently. Do not give the token to ChatGPT."
       },
       "integrations": {
         "title": "Integraciones",

@@ -20,6 +20,7 @@ from plane.license.api.permissions import InstanceAdminPermission
 from plane.license.api.serializers import InstanceSerializer
 from plane.license.models import Instance
 from plane.license.utils.instance_value import get_configuration_value
+from plane.license.utils.instance_language import get_instance_default_language
 from plane.utils.cache import cache_response, invalidate_cache
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_control
@@ -154,6 +155,8 @@ class InstanceEndpoint(BaseAPIView):
 
         instance_data = serializer.data
         instance_data["workspaces_exist"] = Workspace.objects.count() >= 1
+
+        data["default_language"] = get_instance_default_language()
 
         response_data = {"config": data, "instance": instance_data}
         return Response(response_data, status=status.HTTP_200_OK)

@@ -53,7 +53,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
       EMAIL_HOST: config["EMAIL_HOST"],
       EMAIL_PORT: config["EMAIL_PORT"],
       EMAIL_HOST_USER: config["EMAIL_HOST_USER"],
-      EMAIL_HOST_PASSWORD: config["EMAIL_HOST_PASSWORD"],
+      EMAIL_HOST_PASSWORD: "",
       EMAIL_USE_TLS: config["EMAIL_USE_TLS"],
       EMAIL_USE_SSL: config["EMAIL_USE_SSL"],
       EMAIL_FROM: config["EMAIL_FROM"],
@@ -65,7 +65,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
       key: "EMAIL_HOST",
       type: "text",
       label: "Host",
-      placeholder: "email.google.com",
+      placeholder: "smtp.example.com",
       error: Boolean(errors.EMAIL_HOST),
       required: true,
     },
@@ -73,7 +73,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
       key: "EMAIL_PORT",
       type: "text",
       label: "Port",
-      placeholder: "8080",
+      placeholder: "587",
       error: Boolean(errors.EMAIL_PORT),
       required: true,
     },
@@ -102,7 +102,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
       key: "EMAIL_HOST_PASSWORD",
       type: "password",
       label: "Password",
-      placeholder: "Password",
+      placeholder: "Leave blank to keep the saved password",
       error: Boolean(errors.EMAIL_HOST_PASSWORD),
       required: false,
     },
@@ -110,18 +110,23 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
 
   const onSubmit = async (formData: EmailFormValues) => {
     const payload: Partial<EmailFormValues> = { ...formData, ENABLE_SMTP: "1" };
+    if (formData.EMAIL_HOST_PASSWORD === "") delete payload.EMAIL_HOST_PASSWORD;
 
     try {
       await updateInstanceConfigurations(payload);
       // the saved values become the new baseline, so Save disables again until the next edit
-      reset(payload);
+      reset({ ...formData, EMAIL_HOST_PASSWORD: "", ENABLE_SMTP: "1" });
       setToast({
         type: "success",
         title: "Success",
         message: "Email Settings updated successfully",
       });
     } catch (err) {
-      console.error(err);
+      const message =
+        typeof err === "object" && err !== null && "error" in err && typeof err.error === "string"
+          ? err.error
+          : "Failed to update email settings. Please try again.";
+      setToast({ type: "error", title: "Unable to save email settings", message });
     }
   };
 
@@ -219,7 +224,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
           </div>
         </div>
       </div>
-      <div className="flex max-w-4xl items-center gap-4 py-1">
+      <div className="flex max-w-4xl flex-wrap items-center gap-4 py-1">
         <Button
           variant="primary"
           size="md"
@@ -235,7 +240,7 @@ export function InstanceEmailForm(props: IInstanceEmailForm) {
           stretch="auto"
           onClick={() => setIsSendTestEmailModalOpen(true)}
           loading={isSubmitting}
-          disabled={!isValid}
+          disabled={!isValid || isDirty || config["ENABLE_SMTP"] !== "1"}
           label="Send test email"
         />
       </div>

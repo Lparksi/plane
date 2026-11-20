@@ -205,6 +205,53 @@ class TestCommentCreateAuditFields:
         _assert_created_at_is_now(comment.created_at)
 
 
+    def test_agent_identity_is__derived_from_token_and_snapshotted(
+        self, api_client, workspace, project, issue, member_user
+    ):
+        url = _comments_url(workspace.slug, project.id, issue.id)
+        member_user.display_name = "Original owner"
+        member_user.save()
+        first = APIToken.objects.create(user=member_user, label="One", agent_name="dot")
+        second = APIToken.objects.create(user=member_user, label="Two", agent_name="other")
+        api_client.credentials(HTTP_X_API_KEY=first.token, HTTP_X_AGENT_NAME="forged")
+        response = api_client.post(url, {"comment_html": "<p>hi</p>", "author_agent_name": "forged"}, format="json")
+        assert response.status_code == 201, response.data
+        comment = IssueComment.objects.get(pk=response.data["id"])
+        assert (comment.actor_id, comment.author_agent_owner_name, comment.author_agent_name) == (
+            member_user.id, "Original owner", "dot"
+        )
+        first.agent_name = "renamed"
+        first.save()
+        member_user.display_name = "Changed owner"
+        member_user.save()
+        first.delete()
+        comment.refresh_from_db()
+        assert (comment.author_agent_owner_name, comment.author_agent_name) == ("Original owner", "dot")
+        denied = api_client.post(url, {"comment_html": "<p>revoked</p>"}, format="json")
+        assert denied.status_code in (401, 403)
+        api_client.credentials(HTTP_X_API_KEY=second.token)
+        other = api_client.post(url, {"comment_html": "<p>other</p>"}, format="json")
+        assert other.status_code == 201, other.data
+        assert other.data["author_agent_name"] == "other"
+        assert other.data["author_agent_owner_name"] == "Changed owner"
+
+    def test_ordinary_comment_and_agent_project_permissions(
+        self, api_client, member_api_client, workspace, project, issue, member_user
+    ):
+        url = _comments_url(workspace.slug, project.id, issue.id)
+        response = member_api_client.post(
+            url, {"comment_html": "<p>ordinary</p>", "author_agent_name": "forged"}, format="json"
+        )
+        assert response.status_code == 201, response.data
+        assert response.data["author_agent_name"] == ""
+        assert response.data["author_agent_owner_name"] == ""
+        ProjectMember.objects.filter(project=project, member=member_user).update(is_active=False)
+        token = APIToken.objects.create(user=member_user, label="agent", agent_name="dot")
+        api_client.credentials(HTTP_X_API_KEY=token.token)
+        denied = api_client.post(url, {"comment_html": "<p>outside project</p>"}, format="json")
+        assert denied.status_code in (403, 404)
+
+
 @pytest.mark.django_db
 class TestIssueLinkCreateAuditFields:
     def test_post_link_sets_created_by_to_the_caller(
