@@ -1,0 +1,190 @@
+# Isolated build-only experiment: no artifact, registry push, or deployment.
+name: Parksi Web isolated build experiment
+
+on:
+  push:
+    branches:
+      - release/parksi-ce-20261120
+    paths:
+      - .github/workflows/parksi-web-experiment.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parksi-web-experiment
+  cancel-in-progress: false
+
+jobs:
+  web:
+    if: github.repository == 'Lparksi/plane' && github.event.deleted == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout triggering commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Lparksi/plane
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and verify Web locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'Lparksi/plane' && "$GITHUB_REF" == 'refs/heads/release/parksi-ce-20261120' ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          available_kb=$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
+          (( available_kb >= 6291456 )) || { echo 'Web experiment: insufficient runner disk.' >&2; exit 1; }
+          scratch=$(mktemp -d "$RUNNER_TEMP/plane-web-experiment.XXXXXXXX")
+          cid=''
+          cleanup() {
+            if [[ -n "$cid" && "$cid" =~ ^[0-9a-f]{64}$ ]]; then docker rm -f "$cid" > /dev/null 2>&1 || true; fi
+            for marker in cid probe-cid; do
+              if [[ -s "$scratch/$marker" ]]; then
+                candidate=$(<"$scratch/$marker")
+                if [[ "$candidate" =~ ^[0-9a-f]{64}$ ]]; then docker rm -f "$candidate" > /dev/null 2>&1 || true; fi
+              fi
+            done
+            rm -rf "$scratch"
+          }
+          trap cleanup EXIT
+          mkdir "$scratch/source" "$scratch/docker-config"
+          export DOCKER_CONFIG="$scratch/docker-config"
+          unset ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN GITHUB_TOKEN GH_TOKEN
+          # Raw build, image and runtime output remains private and is removed.
+          # No source-controlled code or application process inherits a log FD.
+          set +e
+          (
+            set -euo pipefail
+            exec 3>&-
+            printf SOURCE > "$scratch/phase"
+            git archive --format=tar "$GITHUB_SHA" > "$scratch/source.tar"
+            sha256sum "$scratch/source.tar" | cut -d' ' -f1 > "$scratch/source-hash"
+            tar -xf "$scratch/source.tar" -C "$scratch/source"
+            rm "$scratch/source.tar"
+            cd "$scratch/source"
+            if find . \( -type d \( -name .git -o -name node_modules -o -name .venv -o -name .secrets \) -o -type f \( \( -name '.env*' ! -name '.env.example' \) -o -name '*.pem' -o -name '*.key' \) \) -print -quit | grep -q .; then exit 1; fi
+            node -e 'const c=require(process.argv[1]); if (!(c.tasks?.build?.env || []).includes("PLANE_SOURCE_COMMIT") && !(c.globalEnv || []).includes("PLANE_SOURCE_COMMIT")) process.exit(1)' "$scratch/source/turbo.json"
+            # Refuse any recipe difference beyond the five reviewed edits.
+            python3 - <<'PY'
+          from pathlib import Path
+          s = Path('apps/web/Dockerfile.web').read_text()
+          changes = {
+              'FROM node:22-alpine AS base': 'FROM node:22-alpine@sha256:12f54cafa58d0e96554ae05871e29663ff7241836377dc9a7916449b8adb062c AS base',
+              'FROM caddy:2.11.7-builder-alpine AS caddy-builder': 'FROM caddy:2.11.7-builder-alpine@sha256:420db7c0f6927c7e8140c666628915fb4a9141282fc5c344716ebf3879fe8f9b AS caddy-builder',
+              'FROM caddy:2.11.4-alpine AS production': 'FROM caddy:2.11.4-alpine@sha256:040e9f7480b80b6d4a7e5013a21159b950a63dcbdb956e38abe2387fb28d9ec0 AS production',
+              '--with github.com/mholt/caddy-ratelimit': '--with github.com/mholt/caddy-ratelimit@v0.1.0',
+              'COPY apps/web/caddy/Caddyfile /etc/caddy/Caddyfile': 'COPY --chmod=0644 apps/web/caddy/Caddyfile /etc/caddy/Caddyfile',
+          }
+          for old, new in changes.items():
+              assert s.count(old) == 1
+              s = s.replace(old, new)
+          marker = 'FROM caddy:2.11.4-alpine@sha256:'
+          assert s.count(marker) == 1
+          s = s.replace(marker, "RUN go version -m /usr/bin/caddy | grep -qE 'github\\.com/mholt/caddy-ratelimit[[:space:]]v0\\.1\\.0[[:space:]]'\n\n" + marker)
+          s = s.replace('# syntax=docker/dockerfile:1.7\n', '# syntax=docker/dockerfile:1.7\n# Experimental local-only build; see web-clean-experiment.md for limitations.\n', 1)
+          assert s == Path('integrations/image-build/Dockerfile.web-experiment').read_text()
+          PY
+            printf BASE > "$scratch/phase"
+            runtime_base='caddy:2.11.4-alpine@sha256:040e9f7480b80b6d4a7e5013a21159b950a63dcbdb956e38abe2387fb28d9ec0'
+            docker pull --platform linux/amd64 "$runtime_base" > "$scratch/pull.log" 2>&1
+            printf BUILD > "$scratch/phase"
+            (ulimit -f 131072; docker buildx build --platform linux/amd64 --load --progress plain \
+              --build-arg "PLANE_SOURCE_COMMIT=$GITHUB_SHA" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --file integrations/image-build/Dockerfile.web-experiment \
+              --tag plane-web-experiment:local . > "$scratch/build.log" 2>&1)
+            [[ "$(docker image inspect plane-web-experiment:local --format '{{.Architecture}}')" == 'amd64' ]]
+            [[ "$(docker image inspect plane-web-experiment:local --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" == "$GITHUB_SHA" ]]
+            printf ORIGIN > "$scratch/phase"
+            docker image inspect "$runtime_base" > "$scratch/base.json"
+            docker image inspect plane-web-experiment:local > "$scratch/image.json"
+            python3 - "$scratch/base.json" "$scratch/image.json" > "$scratch/origin-counts" <<'PY'
+          import json, sys
+          base, image = (json.load(open(path))[0] for path in sys.argv[1:])
+          ref = 'caddy@sha256:040e9f7480b80b6d4a7e5013a21159b950a63dcbdb956e38abe2387fb28d9ec0'
+          digests = base.get('RepoDigests') or []
+          assert any(d == ref or d.endswith('/' + ref) for d in digests)
+          a, b = base['RootFS']['Layers'], image['RootFS']['Layers']
+          assert a and b[:len(a)] == a and len(b) > len(a)
+          print(len(a), len(b) - len(a))
+          PY
+            docker image inspect plane-web-experiment:local --format '{{.Id}}' > "$scratch/image-id"
+            # Copy only the Caddyfile from an unstarted, network-isolated image;
+            # reject symlinks and compare bytes with the exact source archive.
+            docker create --network none --entrypoint /bin/false plane-web-experiment:local > "$scratch/probe-cid"
+            probe_cid=$(<"$scratch/probe-cid")
+            [[ "$probe_cid" =~ ^[0-9a-f]{64}$ ]]
+            docker cp "$probe_cid:/etc/caddy/Caddyfile" "$scratch/image-caddyfile"
+            [[ -f "$scratch/image-caddyfile" && ! -L "$scratch/image-caddyfile" ]]
+            (( $(stat -c '%s' "$scratch/image-caddyfile") <= 1048576 ))
+            cmp -s apps/web/caddy/Caddyfile "$scratch/image-caddyfile"
+            docker cp "$probe_cid:/usr/bin/caddy" "$scratch/image-caddy"
+            [[ -f "$scratch/image-caddy" && ! -L "$scratch/image-caddy" ]]
+            (( $(stat -c '%s' "$scratch/image-caddy") <= 268435456 ))
+            sha256sum "$scratch/image-caddy" | cut -d' ' -f1 > "$scratch/caddy-binary-hash"
+            sha256sum apps/web/caddy/Caddyfile | cut -d' ' -f1 > "$scratch/caddy-hash"
+            sha256sum integrations/image-build/Dockerfile.web-experiment | cut -d' ' -f1 > "$scratch/dockerfile-hash"
+            sha256sum pnpm-lock.yaml | cut -d' ' -f1 > "$scratch/lock-hash"
+            docker rm "$probe_cid" > /dev/null
+            rm "$scratch/probe-cid"
+            printf RUNTIME > "$scratch/phase"
+            # Run the exact final image with no network access to other services,
+            # no mounts, no credentials, read-only root, and no capabilities.
+            docker run -d --network none --read-only --user 65534:65534 \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 100 --memory 256m \
+              --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+              -e HOME=/tmp -e XDG_DATA_HOME=/tmp -e XDG_CONFIG_HOME=/tmp \
+              plane-web-experiment:local > "$scratch/cid"
+            cid=$(<"$scratch/cid")
+            ready=0
+            for _ in $(seq 1 30); do
+              if docker exec "$cid" sh -c 'curl -fsS http://127.0.0.1:3000/ | grep -qi "<!doctype html"' > /dev/null 2>&1; then ready=1; break; fi
+              sleep 1
+            done
+            [[ "$ready" == 1 ]]
+            printf ASSET > "$scratch/phase"
+            docker exec -e "SOURCE_SHA=$GITHUB_SHA" "$cid" sh -c '
+              set -eu
+              file=$(find /usr/share/caddy/html -type f -name "*.js" | while IFS= read -r f; do
+                if grep -Fq -- "$SOURCE_SHA" "$f" && grep -Fq -- "https://github.com/Lparksi/plane/tree/" "$f"; then printf "%s" "$f"; break; fi
+              done)
+              test -n "$file"
+              path=${file#/usr/share/caddy/html/}
+              curl -fsS "http://127.0.0.1:3000/$path" > /tmp/source-asset.js
+              grep -Fq -- "$SOURCE_SHA" /tmp/source-asset.js
+              grep -Fq -- "https://github.com/Lparksi/plane/tree/" /tmp/source-asset.js
+              sha256sum /tmp/source-asset.js | cut -d" " -f1
+            ' > "$scratch/js-hash" 2> "$scratch/asset.log"
+            printf '%s' "$cid" > "$scratch/started-container"
+          ) > "$scratch/task.log" 2>&1
+          result=$?
+          set -e
+          # cid was created in a subshell: recover it for guaranteed cleanup.
+          if [[ -s "$scratch/cid" ]]; then cid=$(<"$scratch/cid"); fi
+          if (( result != 0 )); then
+            phase=$(<"$scratch/phase")
+            case "$phase" in SOURCE|BASE|BUILD|ORIGIN|RUNTIME|ASSET) ;; *) phase=UNKNOWN ;; esac
+            printf 'Web experiment: %s check failed. Details were not published.\n' "$phase" >&2
+            exit 1
+          fi
+          source_hash=$(<"$scratch/source-hash")
+          image_id=$(<"$scratch/image-id")
+          caddy_hash=$(<"$scratch/caddy-hash")
+          dockerfile_hash=$(<"$scratch/dockerfile-hash")
+          caddy_binary_hash=$(<"$scratch/caddy-binary-hash")
+          js_hash=$(<"$scratch/js-hash")
+          lock_hash=$(<"$scratch/lock-hash")
+          read -r base_layers added_layers < "$scratch/origin-counts"
+          [[ "$source_hash" =~ ^[0-9a-f]{64}$ && "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$caddy_hash" =~ ^[0-9a-f]{64}$ && "$dockerfile_hash" =~ ^[0-9a-f]{64}$ && "$lock_hash" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$caddy_binary_hash" =~ ^[0-9a-f]{64}$ && "$js_hash" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$base_layers" =~ ^[0-9]{1,4}$ && "$added_layers" =~ ^[0-9]{1,4}$ ]]
+          printf 'Source archive SHA-256: %s; local image config ID: %s.\n' "$source_hash" "$image_id"
+          printf 'Recipe SHA-256: %s; pnpm lock SHA-256: %s.\n' "$dockerfile_hash" "$lock_hash"
+          printf 'Caddyfile source/image exact match SHA-256: %s.\n' "$caddy_hash"
+          printf 'Caddy binary SHA-256: %s; served source-link JS SHA-256: %s.\n' "$caddy_binary_hash" "$js_hash"
+          printf 'Runtime base prefix: %s layers; later layers: %s.\n' "$base_layers" "$added_layers"
+          echo 'Web experiment: local build and limited isolated HTTP/static-source checks completed.'
+          echo 'OS_DELTA_UNVERIFIED: APK repositories are mutable; JavaScript and custom Caddy binary are not independently reproduced.'
+          echo 'Dependency closure is not fully pinned; scanner and workflow trust are not independently established. This is not a security or deployment approval.'

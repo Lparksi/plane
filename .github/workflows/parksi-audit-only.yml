@@ -1,10 +1,10 @@
 # Build and audit locally on ephemeral runners. This workflow never publishes images.
 name: Parksi build and audit only
 
+# Disabled on release pushes for the isolated Web experiment. Manual dispatch
+# requires this workflow to be registered on the default branch.
 on:
-  push:
-    branches:
-      - release/parksi-ce-20261120
+  workflow_dispatch:
 
 permissions:
   contents: read
